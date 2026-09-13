@@ -1,0 +1,9 @@
+<svg width="360" height="200" viewBox="0 0 360 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="g" x1="30" y1="20" x2="325" y2="180" gradientUnits="userSpaceOnUse"><stop stop-color="#FF7DBE"/><stop offset="1" stop-color="#6A2455"/></linearGradient></defs>
+  <rect width="360" height="200" rx="24" fill="#291027"/>
+  <path d="M54 131 145 92l49 12 103-39 18 35-115 44-45-12-86 34-15-35Z" fill="url(#g)" stroke="#FFD5EA" stroke-width="5" stroke-linejoin="round"/>
+  <circle cx="75" cy="142" r="20" fill="#190918" stroke="#FFB8DD" stroke-width="5"/>
+  <circle cx="75" cy="142" r="7" fill="#FF75B9"/>
+  <path d="M183 101 211 55l17 8-18 46" stroke="#FFD5EA" stroke-width="7" stroke-linecap="round"/>
+  <text x="180" y="178" text-anchor="middle" fill="#FFD5EA" font-family="Arial, sans-serif" font-size="20" font-weight="700">SVINO SKIN</text>
+</svg>

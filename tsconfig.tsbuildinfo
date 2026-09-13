@@ -1,0 +1,1 @@
+{"root":["./prisma.config.ts","./backend/prisma/seed.ts","./backend/prisma/sync-catalog-via-api.ts","./backend/src/index.ts","./frontend/vite.config.ts","./frontend/src/app.tsx","./frontend/src/main.tsx"],"errors":true,"version":"5.9.3"}

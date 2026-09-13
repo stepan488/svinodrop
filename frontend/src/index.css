@@ -1,0 +1,2 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Rubik+Glitch&display=swap');
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#100710;color:#fff;font-family:Inter,Arial,sans-serif}button,input{font:inherit}button{cursor:pointer}button:disabled{cursor:wait;opacity:.65}#root{min-height:100vh}

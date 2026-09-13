@@ -1,0 +1,296 @@
+import { useEffect, useMemo, useState } from 'react'
+import { io } from 'socket.io-client'
+import './App.css'
+import './animations.css'
+import './refinement.css'
+
+type Skin = { id: string; name: string; wear: string; price: number; image: string; rarity: string }
+type Case = { id: string; name: string; slug: string; image: string; price: number; collection: string; items: { id: string; weight: number; item: Skin }[] }
+type Inventory = { id: string; obtainedAt: string; obtainedFrom: string; item: Skin }
+type User = { id: string; username: string; email: string; balance: number; role: string; createdAt: string }
+type Drop = { dropId: string; inventoryId: string; item: Skin }
+type Feed = { username: string; item: Skin; kind: string }
+type LeaderboardRow = { id: string; username: string; avatar: string | null; balance: number; inventoryValue: number; skins: number; total: number; rank: number }
+type WheelState = { current: { id: string; status: 'BETTING' | 'SPINNING'; startsAt: string; bettingClosesAt: string; settlesAt: string; targetMultiplier?: number; bonusMultiplier?: number }; history: { id: string; targetMultiplier: number; bonusMultiplier: number; settledAt: string }[]; myBets: { id: string; targetMultiplier: number; amount: number }[]; targets: Record<string, number>; bonuses: number[]; limits: { min: number; max: number } }
+type SpinMode = 'FAST' | 'SLOW' | 'RISK'
+
+// Local development uses the separate API; a production build can use a
+// configured API subdomain or the same origin without shipping localhost.
+const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '')
+const rarity = (value: string) => `rarity-${value.toLowerCase().replaceAll('-', '')}`
+const coins = (value: number) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value / 100)
+const spinDuration: Record<SpinMode, number> = { FAST: 2200, SLOW: 5200, RISK: 8000 }
+const spinModeLabel: Record<SpinMode, string> = { FAST: 'Быстрый', SLOW: 'Плавный', RISK: 'Азартный' }
+const fallbackCases: Case[] = [
+  ['Генста Свин!', 'gensta-svin', 499, 'https://i.ibb.co/tPW2Xyys/b4f6cb58-752e-44ae-885c-bbbe73098ba9-removebg-preview.png'],
+  ['Хакер Свин!', 'hacker-svin', 999, 'https://i.ibb.co/LhSVn6Ct/48eb32a1-02f8-438f-b615-996134c84736.png'],
+  ['Мапер Свин!', 'mapper-svin', 1999, 'https://i.ibb.co/gZpjvqCG/9129ec80-5503-466d-ad65-5a61220e8d5c.png'],
+  ['Пиратский Свин!', 'pirate-svin', 3499, 'https://i.ibb.co/tpc6jfbr/9ff2456a-8ed4-43f4-883d-0d98633f1de0.png'],
+].map(([name, slug, price, image], index) => ({ id: `offline-${index}`, name: String(name), slug: String(slug), price: Number(price) * 100, image: String(image), collection: 'Свиноохотники', items: [] }))
+
+class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) { super(message); this.status = status }
+}
+
+async function request(path: string, token?: string, options: RequestInit = {}) {
+  const response = await fetch(`${API}${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) } })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new ApiError(body.error || 'Свиносервер временно недоступен', response.status)
+  return body
+}
+
+export default function App() {
+  const [page, setPage] = useState<'cases' | 'upgrade' | 'wheel' | 'inventory' | 'profile' | 'chat' | 'leaderboard' | 'admin'>('cases')
+  const [cases, setCases] = useState<Case[]>(fallbackCases)
+  const [casesReady, setCasesReady] = useState(false)
+  const [skins, setSkins] = useState<Skin[]>([])
+  const [user, setUser] = useState<User | null>(null)
+  const [token, setToken] = useState(() => localStorage.getItem('svino-token') || '')
+  const [inventory, setInventory] = useState<Inventory[]>([])
+  const [feed, setFeed] = useState<Feed[]>([])
+  const [online, setOnline] = useState(0)
+  const [selectedCase, setSelectedCase] = useState<Case | null>(null)
+  const [count, setCount] = useState(1)
+  const [opening, setOpening] = useState<Drop[] | null>(null)
+  const [casePhase, setCasePhase] = useState<'idle' | 'spinning' | 'result'>('idle')
+  const [caseMode, setCaseMode] = useState<SpinMode>('SLOW')
+  const [upgradeResult, setUpgradeResult] = useState<{ upgradeId: string; success: boolean; chance: number; target: Skin } | null>(null)
+  const [upgradePhase, setUpgradePhase] = useState<'idle' | 'spinning' | 'result'>('idle')
+  const [upgradeMode, setUpgradeMode] = useState<SpinMode>('SLOW')
+  const [source, setSource] = useState<Inventory | null>(null)
+  const [target, setTarget] = useState<Skin | null>(null)
+  const [upgradeBalance, setUpgradeBalance] = useState(0)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [profile, setProfile] = useState<{ stats: { opens: number; upgrades: number; itemCount: number }; transactions: { id: string; type: string; amount: number; description: string; createdAt: string }[]; daily: { available: boolean; nextAt: string | null; maxValue: number } } | null>(null)
+  const [chat, setChat] = useState<{ id: string; message: string; createdAt: string; user: { username: string } }[]>([])
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([])
+  const [wheel, setWheel] = useState<WheelState | null>(null)
+
+  const toast = (text: string) => { setNotice(text); window.setTimeout(() => setNotice(''), 3600) }
+  const refreshPrivate = async () => {
+    if (!token) return
+    try {
+      // Only the dedicated session check may log a player out. A temporary
+      // failure in a background request must never destroy their local session.
+      const me = await request('/api/auth/me', token)
+      setUser(me.user)
+    } catch (error) {
+      if (error instanceof ApiError && [401, 403].includes(error.status)) {
+        localStorage.removeItem('svino-token'); setToken(''); setUser(null)
+      }
+      return
+    }
+    try {
+      // Claims server-finalized case/upgrade rewards after a refresh during animation.
+      await request('/api/recover-pending', token, { method: 'POST' })
+      const [items, info] = await Promise.all([request('/api/inventory', token), request('/api/profile', token)])
+      setInventory(items); setProfile(info)
+    } catch {
+      // The account stays signed in; the next private refresh retries recovery.
+    }
+  }
+  useEffect(() => { request('/api/cases').then((data) => { setCases(data); setCasesReady(true) }).catch(() => toast('Не удалось загрузить кейсы — проверь API.')); request('/api/items').then(setSkins).catch(() => undefined); request('/api/chat').then(setChat).catch(() => undefined); request('/api/leaderboard').then(setLeaderboard).catch(() => undefined) }, [])
+  useEffect(() => { refreshPrivate() }, [token])
+  useEffect(() => {
+    const socket = io(API)
+    socket.on('online:count', setOnline)
+    socket.on('drop:revealed', (drop: Feed) => setFeed((items) => [drop, ...items].slice(0, 6)))
+    socket.on('chat:message', (message) => setChat((messages) => [message, ...messages].slice(0, 50)))
+    socket.on('chat:deleted', ({ id }: { id: string }) => setChat((messages) => messages.filter((message) => message.id !== id)))
+    return () => { socket.disconnect() }
+  }, [])
+  useEffect(() => { if (page === 'leaderboard') request('/api/leaderboard').then(setLeaderboard).catch(() => toast('Не удалось обновить лидерборд')) }, [page])
+  useEffect(() => {
+    if (page !== 'wheel') return
+    const load = () => request('/api/wheel/state', token || undefined).then(setWheel).catch((error) => toast(error instanceof Error ? error.message : 'Колесо временно недоступно'))
+    load(); const timer = window.setInterval(load, 1_000)
+    return () => window.clearInterval(timer)
+  }, [page, token])
+
+  const upgradeStake = (source?.item.price || 0) + upgradeBalance
+  const upgradeChance = useMemo(() => source && target && target.price > upgradeStake ? Math.max(2, Math.min(90, Math.round(upgradeStake / target.price * 90))) : 0, [source, target, upgradeStake])
+  const login = async (email: string, password: string, username?: string) => {
+    const endpoint = username ? '/api/auth/register' : '/api/auth/login'
+    const body = username ? { username, email, password } : { email, password }
+    const data = await request(endpoint, undefined, { method: 'POST', body: JSON.stringify(body) })
+    localStorage.setItem('svino-token', data.token); setToken(data.token); setUser(data.user); setAuthOpen(false); toast(username ? 'Добро пожаловать в стаю! +1 000 свинокоинов' : 'С возвращением, свинка!')
+  }
+  const openCase = async () => {
+    if (!selectedCase) return
+    if (!token) return setAuthOpen(true)
+    if (selectedCase.id.startsWith('offline')) return toast('Запусти базу данных и сервер, чтобы открыть кейс.')
+    try {
+      setCasePhase('spinning')
+      setOpening(null)
+      const data = await request(`/api/cases/${selectedCase.id}/open`, token, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ count }) })
+      setOpening(data.drops); setCasePhase('spinning'); setUser((current) => current ? { ...current, balance: data.balance } : current)
+    } catch (error) { setCasePhase('idle'); toast(error instanceof Error ? error.message : 'Не удалось открыть кейс') }
+  }
+  const upgrade = async () => {
+    if (!token) return setAuthOpen(true)
+    if (!source || !target) return toast('Сначала выбери предмет и цель.')
+    try {
+      setUpgradePhase('spinning')
+      const result = await request('/api/upgrades', token, { method: 'POST', body: JSON.stringify({ sourceInventoryId: source.id, targetItemId: target.id, balanceStake: upgradeBalance }) })
+      setUpgradeResult(result); setUpgradePhase('spinning'); setUser((current) => current ? { ...current, balance: result.balance } : current)
+    } catch (error) { setUpgradePhase('idle'); toast(error instanceof Error ? error.message : 'Апгрейд не выполнен') }
+  }
+  const redeem = async (code: string) => { try { const data = await request('/api/promos/redeem', token, { method: 'POST', body: JSON.stringify({ code }) }); toast(data.message); refreshPrivate() } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка промокода') } }
+  const claimDaily = async () => { try { const data = await request('/api/daily-case/open', token, { method: 'POST' }); toast(`Ежедневный кейс: ${data.item.name} уже в инвентаре 🐷`); await refreshPrivate() } catch (error) { toast(error instanceof Error ? error.message : 'Ежедневный кейс пока недоступен') } }
+  const sendChat = async (message: string) => { try { await request('/api/chat', token, { method: 'POST', body: JSON.stringify({ message }) }) } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось отправить') } }
+  const sell = async (inventoryId: string) => { try { const data = await request(`/api/inventory/${inventoryId}/sell`, token, { method: 'POST' }); setUser((current) => current ? { ...current, balance: data.balance } : current); toast(`Продано за ${coins(data.payout)} SC`); await refreshPrivate() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось продать предмет') } }
+  const sellAll = async () => { if (!inventory.length || !window.confirm(`Продать все ${inventory.length} предметов за полную стоимость?`)) return; try { const data = await request('/api/inventory/sell-all', token, { method: 'POST' }); setUser((current) => current ? { ...current, balance: data.balance } : current); toast(`Продано предметов: ${data.sold}. Получено ${coins(data.payout)} SC`); await refreshPrivate() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось продать предметы') } }
+  const finishCaseAnimation = async () => { if (casePhase !== 'spinning' || !opening) return; setCasePhase('result'); await Promise.all(opening.map((drop) => request(`/api/drops/${drop.dropId}/reveal`, token, { method: 'POST' }))); await refreshPrivate(); toast('Дроп уже в твоём инвентаре!') }
+  const finishUpgradeAnimation = async () => { if (upgradePhase !== 'spinning' || !upgradeResult) return; setUpgradePhase('result'); setUpgradeBalance(0); setSource(null); setTarget(null); await request(`/api/upgrades/${upgradeResult.upgradeId}/reveal`, token, { method: 'POST' }); await refreshPrivate() }
+  const placeWheelBet = async (targetMultiplier: number, amount: number) => { if (!token) return setAuthOpen(true); if (!wheel) return; try { await request('/api/wheel/bets', token, { method: 'POST', body: JSON.stringify({ roundId: wheel.current.id, targetMultiplier, amount }) }); toast(`Ставка ${coins(amount)} SC на ×${targetMultiplier} принята`); setUser((current) => current ? { ...current, balance: current.balance - amount } : current); setWheel(await request('/api/wheel/state', token)) } catch (error) { toast(error instanceof Error ? error.message : 'Ставка не принята') } }
+
+  // The old wager wheel is deliberately not exposed in the UI. Keep its
+  // implementation dormant while existing local API data ages out safely.
+  void placeWheelBet
+  void WheelGame
+  return <main className="app-shell">
+    <div className="ambient ambient-one" /><div className="ambient ambient-two" />
+    <header className="topbar">
+      <button className="brand" onClick={() => setPage('cases')}><span className="brand-mark">🐷</span><span>SVINO<span>DROP</span></span></button>
+      <nav>{([['cases', 'Кейсы'], ['upgrade', 'Апгрейд'], ['leaderboard', 'Лидерборд'], ['inventory', 'Инвентарь'], ['chat', 'Чат'], ...(user?.role === 'ADMIN' ? [['admin', 'Админ-панель'] as const] : [])] as const).map(([id, label]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}>{label}</button>)}</nav>
+      <div className="top-actions"><span className="online"><i /> {online} свинок онлайн</span>{user ? <button className="user-chip" onClick={() => setPage('profile')}><span className="avatar">🐽</span><b>{coins(user.balance)} <small>SC</small></b><em>{user.username}</em></button> : <button className="login" onClick={() => setAuthOpen(true)}>Войти</button>}</div>
+    </header>
+
+    {page === 'cases' && <section className="page intro-page">
+      <div className="hero-copy"><p className="eyebrow">СВИНСКАЯ КОЛЛЕКЦИЯ #01</p><h1>Кейсы без<br/><strong>скучных</strong> дропов.</h1><p className="hero-text">Свиньи. Кейсы. Скины. И немного свинского безумия.</p><div className="hero-buttons"><button className="pig-button" onClick={() => document.getElementById('cases')?.scrollIntoView({ behavior: 'smooth' })}>Открыть кейсы <span>→</span></button><button className="ghost-button" onClick={() => setPage('upgrade')}>Апгрейд <span>↗</span></button></div><div className="hero-stats"><span><b>35+</b> скинов</span><span><b>8</b> кейсов</span><span><b>100%</b> виртуально</span></div></div>
+      <div className="pig-hero"><div className="hero-crown">♕</div><div className="hero-pig">🐷</div><div className="hero-sticker one">+ DROP</div><div className="hero-sticker two">✦ 2X</div><div className="hero-card"><span>СЕГОДНЯ ВЫПАЛО</span><b>★ Karambit</b><em>1 030 SC</em></div></div>
+      <section id="cases" className="case-section"><div className="section-heading"><div><p className="eyebrow">СВИНСКИЙ ВЫБОР</p><h2>Выбери свой кейс</h2></div><span>{casesReady ? 'Каждый дроп определяется сервером' : 'Подключаем свинобазу...'}</span></div><div className="case-collections">{Object.entries(cases.reduce<Record<string, Case[]>>((groups, item) => { (groups[item.collection] ||= []).push(item); return groups }, {})).map(([collection, collectionCases]) => <section className="case-collection" key={collection}><div className="collection-head"><span>🐷</span><div><p className="eyebrow">КОЛЛЕКЦИЯ</p><h3>{collection}</h3></div><small>{collection === 'Свинячий Окуп' ? 'Сочные шансы · дорогой лут' : 'Стартовая свиноколлекция'}</small></div><div className="case-grid">{collectionCases.map((item, index) => <article className={`case-card case-${index} ${casesReady ? '' : 'loading-case'}`} key={item.id} onClick={() => { if (!casesReady) return toast('Кейсы загружаются, одну секунду 🐷'); setSelectedCase(item); setOpening(null) }}><div className="case-no">{String(index + 1).padStart(2, '0')}</div><img src={item.image} alt={item.name} /><div className="case-footer"><div><h3>{item.name}</h3><p>Коллекция {item.collection}</p></div><b>{coins(item.price)} <small>SC</small></b></div><button disabled={!casesReady}>{casesReady ? <>ОТКРЫТЬ <span>→</span></> : 'ЗАГРУЗКА...'}</button></article>)}</div></section>)}</div></section>
+      <section className="feed-section"><div className="section-heading"><div><p className="eyebrow">LIVE DROP FEED</p><h2>Последние находки</h2></div><span>Без спойлеров до конца анимации</span></div><div className="feed-list">{feed.length ? feed.map((drop, index) => <div className="feed-item" key={`${drop.username}-${index}`}><span className="feed-avatar">🐷</span><span><b>{drop.username}</b> выбил через {drop.kind}</span><strong className={rarity(drop.item.rarity)}>{drop.item.name}</strong></div>) : <div className="empty-feed">Пока здесь тихо... 🐷 Открой первый кейс и зажги ленту.</div>}</div></section>
+    </section>}
+
+    {page === 'upgrade' && <section className="page upgrade-page">
+      <div className="page-title"><p className="eyebrow">RISK IT FOR THE BACON</p><h1>Свинский <strong>апгрейд</strong></h1><p>Выбери предмет, добавь при желании баланс и поставь цель.</p></div>
+      <div className="upgrade-board">
+        <UpgradeColumn title="ТВОЙ ПРЕДМЕТ" subtitle="Выбери из инвентаря" selectedSkin={source?.item} selectedCaption="Твоя ставка" empty={!inventory.length ? 'Открой кейс, чтобы начать.' : undefined}>{inventory.slice(0, 6).map((entry) => <SkinCard key={entry.id} skin={entry.item} selected={source?.id === entry.id} onClick={() => { setSource(entry); setUpgradePhase('idle'); setUpgradeResult(null) }} />)}</UpgradeColumn>
+        <div className="upgrade-core">
+          <UpgradeDial key={`${upgradeResult?.upgradeId || 'idle'}-${upgradeMode}`} chance={upgradeChance} phase={upgradePhase} result={upgradeResult} mode={upgradeMode} onFinished={finishUpgradeAnimation}/>
+          <div className="upgrade-copy"><b>{upgradePhase === 'spinning' ? (upgradeResult ? 'СТРЕЛКА В ПОЛЁТЕ…' : 'ФИКСИРУЕМ РЕЗУЛЬТАТ…') : upgradePhase === 'result' ? (upgradeResult?.success ? 'АПГРЕЙД УСПЕШЕН! 🔥' : 'В ЭТОТ РАЗ НЕ ПОВЕЗЛО') : 'ВЫБЕРИ СТАВКУ И ЦЕЛЬ'}</b><span>{upgradePhase === 'idle' ? `Шанс попадания: ${upgradeChance || 0}%` : 'Результат уже защищён сервером'}</span></div>
+          <div className="upgrade-stake"><div><label htmlFor="upgrade-balance">Добавить балансом</label><input id="upgrade-balance" type="range" min="0" max={Math.floor((user?.balance || 0) / 100)} step="1" value={upgradeBalance / 100} disabled={upgradePhase === 'spinning'} onChange={(event) => { setUpgradeBalance(Number(event.target.value) * 100); setUpgradePhase('idle'); setUpgradeResult(null) }}/><div className="stake-marks"><button type="button" onClick={() => setUpgradeBalance(0)}>0</button><button type="button" onClick={() => setUpgradeBalance(Math.floor((user?.balance || 0) * .25 / 100) * 100)}>25%</button><button type="button" onClick={() => setUpgradeBalance(Math.floor((user?.balance || 0) * .5 / 100) * 100)}>50%</button><button type="button" onClick={() => setUpgradeBalance(Math.floor((user?.balance || 0) / 100) * 100)}>MAX</button></div></div><strong>{coins(upgradeBalance)} <small>SC</small></strong><span>Общая ставка: {coins(upgradeStake)} SC</span></div>
+          <div className="spin-modes">{(['FAST','SLOW','RISK'] as SpinMode[]).map((mode) => <button key={mode} disabled={upgradePhase === 'spinning'} className={upgradeMode === mode ? 'chosen' : ''} onClick={() => setUpgradeMode(mode)}>{spinModeLabel[mode]}</button>)}</div>
+          <div className="quick-row">{[2, 3, 5, 10, 25].map((x) => <button key={x} disabled={upgradePhase === 'spinning'} onClick={() => { if (source) { setTarget(skins.find((skin) => skin.price > upgradeStake && skin.price >= upgradeStake * x) || null); setUpgradePhase('idle'); setUpgradeResult(null) } }}>×{x}</button>)}</div>
+          {upgradePhase === 'spinning' && upgradeResult && <button className="skip-upgrade" onClick={finishUpgradeAnimation}>Пропустить анимацию ↷</button>}
+          <button className="pig-button upgrade-button" disabled={upgradePhase === 'spinning'} onClick={() => { if (upgradePhase === 'result') { setUpgradePhase('idle'); setUpgradeResult(null); return } upgrade() }}>{upgradePhase === 'spinning' ? 'СТРЕЛКА КРУТИТСЯ…' : upgradePhase === 'result' ? 'ЕЩЁ ОДНА ПОПЫТКА →' : `АПГРЕЙД · ${spinModeLabel[upgradeMode].toUpperCase()} →`}</button>
+        </div>
+        <UpgradeColumn title="ЦЕЛЬ" subtitle="Предмет, который получишь при успехе" selectedSkin={target} selectedCaption="Твоя цель">{skins.filter((skin) => skin.price > upgradeStake).slice(0, 6).map((skin) => <SkinCard key={skin.id} skin={skin} selected={target?.id === skin.id} onClick={() => { setTarget(skin); setUpgradePhase('idle'); setUpgradeResult(null) }} />)}</UpgradeColumn>
+      </div>
+    </section>}
+
+    {page === 'inventory' && <section className="page compact-page"><div className="page-title left"><p className="eyebrow">МОЯ КОЛЛЕКЦИЯ</p><h1>Мои <strong>предметы</strong></h1><p>{user ? `${inventory.length} предметов в свинкопарке · продажа за полную цену` : 'Войди, чтобы увидеть инвентарь'}</p>{inventory.length > 0 && <button className="pig-button sell-all" onClick={sellAll}>Продать всё · {coins(inventory.reduce((sum, entry) => sum + entry.item.price, 0))} SC</button>}</div>{inventory.length ? <div className="inventory-grid">{inventory.map((entry) => <InventoryCard key={entry.id} entry={entry} onSell={sell} />)}</div> : <EmptyInventory onClick={() => setPage('cases')} />}</section>}
+    {page === 'profile' && <section className="page compact-page"><div className="profile-banner"><div className="profile-pig">🐷</div><div><p className="eyebrow">СВИНОПРОФИЛЬ</p><h1>{user?.username || 'Гость'}</h1><p>{user ? `В стае с ${new Date(user.createdAt).toLocaleDateString('ru-RU')}` : 'Войди в аккаунт, чтобы сохранить свою коллекцию.'}</p></div><button className="login" onClick={() => user ? (localStorage.removeItem('svino-token'), setToken(''), setUser(null)) : setAuthOpen(true)}>{user ? 'Выйти' : 'Войти'}</button></div>{user && <><div className="stat-row"><Stat value={coins(user.balance)} label="свинокоинов"/><Stat value={profile?.stats.opens || 0} label="открытий"/><Stat value={profile?.stats.upgrades || 0} label="апгрейдов"/><Stat value={profile?.stats.itemCount || 0} label="предметов"/></div><div className="profile-columns"><section className="panel daily-case"><span>🎁</span><div><p className="eyebrow">КАЖДЫЕ 24 ЧАСА</p><h3>Ежедневный кейс</h3><p>Один предмет стоимостью до 1 500 SC.</p>{profile?.daily?.available ? <button className="pig-button" onClick={claimDaily}>Забрать кейс →</button> : <small>Следующий: {profile?.daily?.nextAt ? new Date(profile.daily.nextAt).toLocaleString('ru-RU') : 'скоро'}</small>}</div></section><section className="panel"><h3>Промокод</h3><p>У свинок есть секретные коды.</p><PromoForm onSubmit={redeem}/></section><section className="panel"><h3>Последние операции</h3>{profile?.transactions.map((transaction) => <div className="transaction" key={transaction.id}><span>{transaction.description}</span><b className={transaction.amount >= 0 ? 'positive' : 'negative'}>{transaction.amount >= 0 ? '+' : ''}{coins(transaction.amount)} SC</b></div>)}</section></div></>}</section>}
+    {page === 'chat' && <section className="page compact-page chat-page"><div className="page-title left"><p className="eyebrow">СВИНОЧАТ</p><h1>Стая <strong>онлайн</strong></h1><p>Будь милым, не спамь — свинки всё видят.</p></div><div className="chat-box"><div className="messages">{chat.length ? chat.map((message) => <div className="message" key={message.id}><span>🐷</span><div><b>{message.user.username}</b><p>{message.message}</p></div><time>{new Date(message.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time></div>) : <div className="empty-feed">Пока здесь тихо... 🐷</div>}</div><ChatForm disabled={!user} onSubmit={sendChat}/></div></section>}
+    {page === 'leaderboard' && <Leaderboard rows={leaderboard} currentUserId={user?.id}/>} 
+    {page === 'admin' && user?.role === 'ADMIN' && <AdminPanelV2 token={token} toast={toast}/>} 
+
+    {selectedCase && <CaseModal data={selectedCase} count={count} setCount={setCount} opening={opening} phase={casePhase} mode={caseMode} setMode={setCaseMode} onFinished={finishCaseAnimation} onClose={() => { if (casePhase !== 'spinning') { setSelectedCase(null); setCasePhase('idle'); setOpening(null) } }} onOpen={openCase} />}
+    {authOpen && <AuthModal onClose={() => setAuthOpen(false)} onSubmit={login} />}
+    {notice && <div className="toast">🐷 {notice}</div>}
+  </main>
+}
+
+function SkinCard({ skin, selected, onClick, note }: { skin: Skin; selected?: boolean; onClick?: () => void; note?: string }) { return <button className={`skin-card ${rarity(skin.rarity)} ${selected ? 'selected' : ''}`} onClick={onClick}><img src={skin.image} alt="" loading="lazy" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = '/skin-fallback.svg' }}/><span>{skin.wear}</span><div><b>{skin.name}</b><em>{coins(skin.price)} SC</em>{note && <small>{note}</small>}</div></button> }
+function InventoryCard({ entry, onSell }: { entry: Inventory; onSell: (id: string) => void }) { return <article className={`inventory-card ${rarity(entry.item.rarity)}`}><img src={entry.item.image} alt="" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = '/skin-fallback.svg' }}/><span>{entry.item.wear}</span><b>{entry.item.name}</b><em>{coins(entry.item.price)} SC</em><small>Продажа: {coins(entry.item.price)} SC</small><button className="login" onClick={() => onSell(entry.id)}>Продать</button></article> }
+function UpgradeColumn({ title, subtitle, children, empty, selectedSkin, selectedCaption }: { title: string; subtitle: string; children: React.ReactNode; empty?: string; selectedSkin?: Skin | null; selectedCaption?: string }) { return <section className="upgrade-column"><div className="board-label"><span>🐷</span><div><b>{title}</b><small>{subtitle}</small></div></div><div className={`upgrade-selected ${selectedSkin ? 'has-skin' : ''}`}>{selectedSkin ? <><small>{selectedCaption}</small><img src={selectedSkin.image} alt=""/><b>{selectedSkin.name}</b><em>{coins(selectedSkin.price)} SC</em></> : <span>{title === 'ЦЕЛЬ' ? 'Выбери желаемый скин' : 'Выбери скин из инвентаря'}</span>}</div>{empty ? <p className="select-empty">{empty}</p> : <div className="choice-list">{children}</div>}</section> }
+function Stat({ value, label }: { value: number | string; label: string }) { return <div className="stat"><b>{value}</b><span>{label}</span></div> }
+function Leaderboard({ rows, currentUserId }: { rows: LeaderboardRow[]; currentUserId?: string }) { return <section className="page compact-page leaderboard-page"><div className="leaderboard-hero"><div><p className="eyebrow">ОБЩИЙ РЕЙТИНГ · ДОСТУПЕН КАЖДОМУ</p><h1>Лидер<strong>борд</strong></h1><p>Место определяется всем состоянием свинки: балансом и полной стоимостью скинов в инвентаре.</p></div><div className="leaderboard-cup">🏆<span>TOP<br/>PIGS</span></div></div><div className="leaderboard-table"><div className="leaderboard-head"><span>#</span><span>Игрок</span><span>Скины</span><span>Баланс</span><span>Капитал</span></div>{rows.length ? rows.map((row) => <article className={`leaderboard-row ${row.id === currentUserId ? 'is-me' : ''}`} key={row.id}><b className={`rank rank-${Math.min(row.rank, 3)}`}>{row.rank}</b><div className="leader-name"><span>{row.avatar || '🐷'}</span><b>{row.username}{row.id === currentUserId && <small>это ты</small>}</b></div><span>{row.skins} шт. · {coins(row.inventoryValue)} SC</span><span>{coins(row.balance)} SC</span><strong>{coins(row.total)} <small>SC</small></strong></article>) : <div className="empty-feed">Лидерборд загружается…</div>}</div></section> }
+function WheelGame({ state, balance, onBet }: { state: WheelState | null; balance: number; onBet: (target: number, amount: number) => void }) {
+  const [target, setTarget] = useState(2)
+  const [amount, setAmount] = useState('100')
+  const segments = [
+    ...Array(22).fill({ value: 2, color: '#ff4ea9' }), ...Array(11).fill({ value: 3, color: '#7d6dff' }), ...Array(7).fill({ value: 5, color: '#4daaff' }), ...Array(5).fill({ value: 8, color: '#52e6a0' }), ...Array(3).fill({ value: 10, color: '#ffd15d' }), ...Array(2).fill({ value: 20, color: '#ff8d51' }), { value: 30, color: '#ff4b68' },
+  ] as { value: number; color: string }[]
+  const slice = 360 / segments.length
+  const gradient = `conic-gradient(${segments.map((entry, index) => `${entry.color} ${index * slice}deg ${(index + 1) * slice}deg`).join(',')})`
+  const now = Date.now(); const round = state?.current
+  const seconds = round ? Math.max(0, Math.ceil(((round.status === 'BETTING' ? new Date(round.bettingClosesAt) : new Date(round.settlesAt)).getTime() - now) / 1000)) : 0
+  const betting = round?.status === 'BETTING'
+  const wager = Math.round(Number(amount || 0) * 100)
+  const valid = state && wager >= state.limits.min && wager <= state.limits.max && wager <= balance
+  return <section className="page wheel-page"><div className="wheel-heading"><div><p className="eyebrow">PIGGY LUCK · РАУНД КАЖДЫЕ 15 СЕКУНД</p><h1>Свинячье <strong>колесо</strong></h1><p>Угадай цвет. Когда он выпадет, бонус-барабан умножит твою ставку.</p></div><div className={`wheel-clock ${betting ? '' : 'spinning'}`}><span>{betting ? 'СТАВКИ' : 'КРУТИМ'}</span><b>{seconds}</b><small>сек.</small></div></div><div className="wheel-layout"><section className="wheel-stage"><div className="wheel-note"><span>🐷</span> {betting ? 'Выбери цвет до сигнала' : 'Ставки закрыты · барабаны крутятся'}</div><div className="wheel-machines"><div className="pig-wheel-shell"><div className="wheel-pointer">▼</div><div key={`${round?.id || 'warm'}-${round?.status || ''}`} className={`pig-wheel ${round?.status === 'SPINNING' ? 'spinning' : ''}`} style={{ background: gradient }}><div className="wheel-rim"/><div className="wheel-core"><span>🐽</span><b>{round?.status === 'SPINNING' ? `×${round.targetMultiplier || '?'}` : 'УГАДАЙ'}</b><small>{round?.status === 'SPINNING' ? 'ВЫПАВШИЙ ЦВЕТ' : 'СВОЙ ЦВЕТ'}</small></div></div></div><div className="bonus-machine"><span className="bonus-arrow">▼</span><div key={`${round?.id || 'warm'}-${round?.status || ''}`} className={`bonus-drum ${round?.status === 'SPINNING' ? 'spinning' : ''}`}><span>🎁</span><b>{round?.status === 'SPINNING' ? `×${round.bonusMultiplier || '?'}` : '×?'}</b><small>БОНУС</small></div><p>Выплата = ставка × бонус</p></div></div><div className="wheel-legend">{Object.entries(state?.targets || {}).map(([value, count]) => <span className={`legend-x x-${value}`} key={value}>×{value}<small>{count} цветов</small></span>)}</div></section><aside className="wheel-bet-panel"><p className="eyebrow">ПОСТАВИТЬ НА ЦВЕТ</p><h2>Твоя свиная ставка</h2><div className="wheel-targets">{[2, 3, 5, 8, 10, 20, 30].map((value) => <button key={value} className={`${target === value ? 'selected' : ''} wheel-target x-${value}`} disabled={!betting} onClick={() => setTarget(value)}><b>×{value}</b><small>{state?.targets[String(value)] || 0} ячеек</small></button>)}</div><label className="wheel-amount">Ставка, SC<input type="number" min="100" max="100000" value={amount} disabled={!betting} onChange={(event) => setAmount(event.target.value)}/><div><button onClick={() => setAmount('100')}>MIN</button><button onClick={() => setAmount(String(Math.min(100000, Math.floor(balance / 200))))}>50%</button><button onClick={() => setAmount(String(Math.min(100000, Math.floor(balance / 100))))}>MAX</button></div></label><p className="wheel-balance">Баланс: <b>{coins(balance)} SC</b></p><button className="pig-button wheel-bet" disabled={!betting || !valid} onClick={() => onBet(target, wager)}>{betting ? `ПОСТАВИТЬ ${coins(wager)} SC НА ×${target}` : 'БАРАБАНЫ КРУТЯТСЯ…'} →</button>{state?.myBets.length ? <div className="my-wheel-bets"><small>ТВОИ СТАВКИ В ЭТОМ РАУНДЕ</small>{state.myBets.map((bet) => <span key={bet.id}>×{bet.targetMultiplier} · {coins(bet.amount)} SC</span>)}</div> : <p className="wheel-hint">Минимум 100 SC · максимум 100 000 SC</p>}</aside></div><section className="wheel-history"><div><p className="eyebrow">ПОСЛЕДНИЕ РАУНДЫ</p><h2>История множителей</h2></div><div className="history-list">{state?.history.length ? state.history.map((entry) => <article key={entry.id}><span className={`history-color x-${entry.targetMultiplier}`}>×{entry.targetMultiplier}</span><b>Бонус ×{entry.bonusMultiplier}</b><small>{entry.settledAt ? new Date(entry.settledAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}</small></article>) : <div className="empty-feed">Колесо разогревается…</div>}</div></section></section> }
+function EmptyInventory({ onClick }: { onClick: () => void }) { return <div className="empty-inventory"><span>🐷</span><h2>ТВОЯ СВИНКА ПОКА ПУСТА</h2><p>Открой первый кейс и начни коллекцию!</p><button className="pig-button" onClick={onClick}>Открыть кейсы →</button></div> }
+function PromoForm({ onSubmit }: { onSubmit: (code: string) => void }) { const [value, setValue] = useState(''); return <form className="promo-form" onSubmit={(event) => { event.preventDefault(); if (value) onSubmit(value) }}><input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Введите промокод"/><button>АКТИВИРОВАТЬ</button></form> }
+function ChatForm({ disabled, onSubmit }: { disabled: boolean; onSubmit: (message: string) => void }) { const [value, setValue] = useState(''); return <form className="chat-form" onSubmit={(event) => { event.preventDefault(); if (value && !disabled) { onSubmit(value); setValue('') } }}><input disabled={disabled} value={value} onChange={(event) => setValue(event.target.value)} placeholder={disabled ? 'Войди, чтобы писать в чат' : 'Напиши что-нибудь стае...'}/><button disabled={disabled}>Отправить ↑</button></form> }
+function AuthModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (email: string, password: string, username?: string) => Promise<void> }) { const [register, setRegister] = useState(false); const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [username, setUsername] = useState(''); const [error, setError] = useState(''); return <div className="modal-backdrop"><form className="auth-modal" onSubmit={async (event) => { event.preventDefault(); try { await onSubmit(email, password, register ? username : undefined) } catch (err) { setError(err instanceof Error ? err.message : 'Ошибка') } }}><button className="close" type="button" onClick={onClose}>×</button><div className="auth-pig">🐷</div><p className="eyebrow">СВИНОПРОПУСК</p><h2>{register ? 'Вступить в стаю' : 'С возвращением!'}</h2>{register && <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Никнейм" required/>}<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" required/><input type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Пароль (от 8 символов)" required/>{error && <p className="form-error">{error}</p>}<button className="pig-button">{register ? 'Создать аккаунт' : 'Войти'} →</button><button type="button" className="text-button" onClick={() => { setRegister(!register); setError('') }}>{register ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Вступить в стаю'}</button></form></div> }
+function UpgradeDial({ chance, phase, result, mode, onFinished }: { chance: number; phase: 'idle' | 'spinning' | 'result'; result: { success: boolean } | null; mode: SpinMode; onFinished: () => void }) {
+  const safeChance = Math.max(2, chance || 2)
+  return <div className={`upgrade-status ${phase} ${result?.success ? 'success' : result ? 'failure' : ''}`} style={{ '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties} onAnimationEnd={() => { if (phase === 'spinning' && result) onFinished() }}>
+    <span className="upgrade-status-pig">🐽</span><small>{phase === 'spinning' ? 'АПГРЕЙД В ПРОЦЕССЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС НА УСПЕХ'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>{phase === 'spinning' ? 'РЕЗУЛЬТАТ УЖЕ ЗАЩИЩЁН СЕРВЕРОМ' : 'SVINO LUCK'}</em>
+  </div>
+}
+
+function CaseReel({ pool, winner, phase, compact, onFinished }: { pool: Skin[]; winner?: Skin; phase: 'idle' | 'spinning' | 'result'; compact?: boolean; onFinished?: () => void }) {
+  const reel = winner ? Array.from({ length: 36 }, (_, index) => index === 20 ? winner : pool[(index * 7 + 3) % Math.max(pool.length, 1)]).filter(Boolean) as Skin[] : pool.slice(0, 12)
+  const state = phase === 'spinning' && winner ? 'rolling' : phase === 'result' && winner ? 'finished' : ''
+  return <div className={`sd-case-reel ${compact ? 'compact' : ''} ${state}`}><div className="sd-case-pointer"/><div key={winner?.id || 'preview'} className={`sd-case-track ${state}`} onAnimationEnd={() => { if (phase === 'spinning' && winner) onFinished?.() }}>
+    {reel.map((skin, index) => <article className={`sd-case-card ${rarity(skin.rarity)}`} key={`${skin.id}-${index}`}><img src={skin.image} alt="" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = '/skin-fallback.svg' }}/><small>{skin.wear}</small><b>{skin.name}</b><em>{coins(skin.price)} SC</em></article>)}
+  </div></div>
+}
+
+function CaseModal({ data, count, setCount, opening, phase, mode, setMode, onFinished, onClose, onOpen }: { data: Case; count: number; setCount: (n: number) => void; opening: Drop[] | null; phase: 'idle' | 'spinning' | 'result'; mode: SpinMode; setMode: (mode: SpinMode) => void; onFinished: () => void; onClose: () => void; onOpen: () => void }) {
+  const pool = data.items.map((entry) => entry.item)
+  const multi = (opening?.length || count) > 1
+  const reels = opening?.map((drop) => drop.item) || [undefined]
+  const contents = [...data.items].sort((left, right) => left.item.price - right.item.price)
+  return <div className="modal-backdrop"><section className={`case-modal cinematic-case ${phase} ${multi ? 'multi-opening' : ''} mode-${mode.toLowerCase()}`} style={{ '--reel-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
+    <button className="close" onClick={onClose} disabled={phase === 'spinning'}>×</button>
+    <div className="case-modal-head"><img src={data.image} alt=""/><div><p className="eyebrow">СВИНООХОТНИКИ · SERVER DROP</p><h2>{data.name}</h2><p>{phase === 'spinning' ? 'Все результаты уже зафиксированы сервером. Ленты плавно замедляются…' : 'Состав и веса открыты: дорогие предметы встречаются реже.'}</p></div><b>{coins(data.price)} <small>SC</small></b></div>
+    <div className="reel-status"><span className="pulse-dot"/>{phase === 'spinning' ? 'КРУТИМ РУЛЕТКУ' : phase === 'result' ? 'ДРОП РАСКРЫТ' : 'ГОТОВ К ОТКРЫТИЮ'}<em>SERVER VERIFIED</em></div>
+    <div className={`case-reels ${multi ? 'multiple' : ''}`}>{reels.map((winner, index) => <CaseReel key={`${winner?.id || 'empty'}-${index}`} pool={pool} winner={winner} phase={phase} compact={multi} onFinished={index === 0 ? onFinished : undefined}/>)}</div>
+    {phase === 'idle' && <section className="case-contents"><div><b>СОДЕРЖИМОЕ КЕЙСА</b><span>{contents.length} предметов · от {coins(contents[0]?.item.price || 0)} до {coins(contents.at(-1)?.item.price || 0)} SC</span></div><div className="case-contents-grid">{contents.map((entry) => <article className={rarity(entry.item.rarity)} key={entry.id}><img src={entry.item.image} alt="" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = '/skin-fallback.svg' }}/><span><b>{entry.item.name}</b><small>{entry.item.wear} · вес {entry.weight}</small></span><em>{coins(entry.item.price)} SC</em></article>)}</div></section>}
+    {phase === 'result' && opening && <div className="case-result"><span>🐷</span><div><small>{opening.length > 1 ? `ТВОИ ${opening.length} НОВЫХ ДРОПОВ` : 'ТВОЙ НОВЫЙ ДРОП'}</small><b>{opening.map((drop) => drop.item.name).join(' · ')}</b><em>Все предметы уже добавлены в инвентарь</em></div><button className="login" onClick={onClose}>Забрать →</button></div>}
+    <div className="case-controls"><div className="case-options"><small>ОТКРЫТЬ СЕРИЕЙ</small><div className="count-picker">{[1, 2, 3, 4, 5].map((value) => <button key={value} disabled={phase === 'spinning'} className={count === value ? 'chosen' : ''} onClick={() => setCount(value)}>×{value}</button>)}</div><div className="spin-modes case-modes">{(['FAST','SLOW','RISK'] as SpinMode[]).map((speed) => <button disabled={phase === 'spinning'} className={mode === speed ? 'chosen' : ''} key={speed} onClick={() => setMode(speed)}>{spinModeLabel[speed]}</button>)}</div></div><div className="case-buy"><span>{count > 1 ? `${count} кейсов · ${spinModeLabel[mode].toLowerCase()} режим` : `${spinModeLabel[mode]} режим`}</span><button className="pig-button case-launch" onClick={onOpen} disabled={phase === 'spinning'}>{phase === 'spinning' ? (opening ? 'ЛЕНТЫ КРУТЯТСЯ…' : 'ФИКСИРУЕМ ДРОП…') : `ОТКРЫТЬ ЗА ${coins(data.price * count)} SC`} <span>→</span></button></div></div>
+  </section></div>
+}
+function AdminPanel({ token, toast }: { token: string; toast: (text: string) => void }) { const [users, setUsers] = useState<{ id: string; username: string; email: string; balance: number; isBanned: boolean; muteUntil: string | null }[]>([]); const [tab, setTab] = useState<'users' | 'cases' | 'promos'>('users'); const [records, setRecords] = useState<{ id: string; name?: string; code?: string; active: boolean; price?: number; uses?: number; maxUses?: number }[]>([]); const load = () => request(tab === 'users' ? '/api/admin/users' : `/api/admin/${tab}`, token).then(tab === 'users' ? setUsers : setRecords).catch((error) => toast(error.message)); useEffect(() => { load() }, [tab]); const changeBalance = async (id: string, direction: 'ADD' | 'REMOVE') => { const raw = window.prompt(direction === 'ADD' ? 'Сколько выдать (в свинокоинах)?' : 'Сколько списать?'); const amount = Math.round(Number(raw) * 100); if (!amount) return; try { await request(`/api/admin/users/${id}/balance`, token, { method: 'POST', body: JSON.stringify({ direction, amount }) }); toast('Баланс изменён'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка') } }; return <section className="page compact-page"><div className="page-title left"><p className="eyebrow">ADMIN ONLY</p><h1>Панель <strong>свинобосса</strong></h1><p>Управление игроками, виртуальной экономикой и контентом.</p></div><div className="admin-tabs">{(['users', 'cases', 'promos'] as const).map((id) => <button className={tab === id ? 'active' : ''} key={id} onClick={() => setTab(id)}>{id === 'users' ? 'Пользователи' : id === 'cases' ? 'Кейсы' : 'Промокоды'}</button>)}</div><div className="admin-table">{tab === 'users' ? users.map((item) => <div className="admin-row" key={item.id}><span>🐷</span><div><b>{item.username} {item.isBanned && <em>БАН</em>}</b><small>{item.email}</small></div><strong>{coins(item.balance)} SC</strong><button onClick={() => changeBalance(item.id, 'ADD')}>+ Баланс</button><button onClick={() => changeBalance(item.id, 'REMOVE')}>− Баланс</button></div>) : records.map((item) => <div className="admin-row" key={item.id}><span>{tab === 'cases' ? '📦' : '🎟️'}</span><div><b>{item.name || item.code}</b><small>{item.active ? 'Активен' : 'Отключён'}</small></div><strong>{item.price ? `${coins(item.price)} SC` : `${item.uses || 0}/${item.maxUses || 0}`}</strong></div>)}</div></section> }
+function AdminPanelV2({ token, toast }: { token: string; toast: (text: string) => void }) {
+  void AdminPanel
+  const [tab, setTab] = useState<'users' | 'cases' | 'items' | 'promos' | 'chat' | 'logs'>('users')
+  const [users, setUsers] = useState<{ id: string; username: string; email: string; balance: number; isBanned: boolean; muteUntil: string | null }[]>([])
+  const [rows, setRows] = useState<any[]>([])
+  const [caseEditor, setCaseEditor] = useState<any | null | undefined>(undefined)
+  const load = async () => { try { if (tab === 'users') setUsers(await request('/api/admin/users', token)); else setRows(await request(`/api/admin/${tab}`, token)) } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка загрузки') } }
+  useEffect(() => { load() }, [tab])
+  const balance = async (userId: string, direction: 'ADD' | 'REMOVE') => { const value = Number(window.prompt(direction === 'ADD' ? 'Выдать свинокоины:' : 'Списать свинокоины:')); if (!value) return; await request(`/api/admin/users/${userId}/balance`, token, { method: 'POST', body: JSON.stringify({ direction, amount: Math.round(value * 100) }) }); toast('Баланс обновлён'); load() }
+  const status = async (userId: string, body: object, message: string) => { try { await request(`/api/admin/users/${userId}/status`, token, { method: 'PATCH', body: JSON.stringify(body) }); toast(message); load() } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка') } }
+  const details = async (userId: string) => { try { const data = await request(`/api/admin/users/${userId}/inventory`, token); window.alert(data.length ? data.map((entry: { item: Skin }) => `${entry.item.name} — ${coins(entry.item.price)} SC`).join('\n') : 'Инвентарь пуст.') } catch { toast('Не удалось открыть инвентарь') } }
+  const toggleCase = async (item: { id: string; active: boolean }) => { await request(`/api/admin/cases/${item.id}`, token, { method: 'PATCH', body: JSON.stringify({ active: !item.active }) }); toast(item.active ? 'Кейс отключён' : 'Кейс включён'); load() }
+  const toggleItem = async (item: { id: string; active: boolean }) => { try { await request(`/api/admin/items/${item.id}`, token, { method: 'PATCH', body: JSON.stringify({ active: !item.active }) }); toast(item.active ? 'Предмет скрыт из выпадений' : 'Предмет возвращён в выпадения'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка') } }
+  const addItem = async () => { const id = window.prompt('Уникальный ID предмета:'); const name = window.prompt('Название предмета:'); const price = Number(window.prompt('Цена в свинокоинах:')); const image = window.prompt('Ссылка на изображение:'); if (!id || !name || !price || !image) return; try { await request('/api/admin/items', token, { method: 'POST', body: JSON.stringify({ id, name, price: Math.round(price * 100), image, wear: 'FN', rarity: 'CLASSIFIED' }) }); toast('Предмет добавлен'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось добавить предмет') } }
+  const editItem = async (item: { id: string; name: string; price: number; image: string; wear: string; rarity: string }) => { const name = window.prompt('Название предмета:', item.name); const price = Number(window.prompt('Цена в свинокоинах:', String(item.price / 100))); const image = window.prompt('Ссылка на изображение:', item.image); const wear = window.prompt('Wear:', item.wear); const rarity = window.prompt('Редкость:', item.rarity); if (!name || !price || !image || !wear || !rarity) return; try { await request(`/api/admin/items/${item.id}`, token, { method: 'PATCH', body: JSON.stringify({ name, price: Math.round(price * 100), image, wear, rarity }) }); toast('Предмет сохранён'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось сохранить предмет') } }
+  const togglePromo = async (item: { id: string; active: boolean }) => { try { await request(`/api/admin/promos/${item.id}`, token, { method: 'PATCH', body: JSON.stringify({ active: !item.active }) }); toast(item.active ? 'Промокод отключён' : 'Промокод включён'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка') } }
+  const removeMessage = async (id: string) => { try { await request(`/api/admin/chat/${id}`, token, { method: 'DELETE' }); toast('Сообщение удалено'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка') } }
+  const newPromo = async () => { const code = window.prompt('Код промокода, например PIG2026')?.toUpperCase(); const coinsValue = Number(window.prompt('Награда в свинокоинах:')); const maxUses = Number(window.prompt('Сколько раз можно активировать:')); if (!code || !coinsValue || !maxUses) return; try { await request('/api/admin/promos', token, { method: 'POST', body: JSON.stringify({ code, rewardType: 'BALANCE', rewardValue: Math.round(coinsValue * 100), maxUses }) }); toast('Промокод создан'); load() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось создать промокод') } }
+  const resetEconomy = async () => { if (window.prompt('Введите RESET_ALL_BALANCES_AND_SKINS для очистки балансов и скинов у ВСЕХ игроков:') !== 'RESET_ALL_BALANCES_AND_SKINS') return; try { const result = await request('/api/admin/economy/reset', token, { method: 'POST', body: JSON.stringify({ confirmation: 'RESET_ALL_BALANCES_AND_SKINS' }) }); toast(`Очищено: ${result.users} игроков, ${result.skins} скинов`); load() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось очистить экономику') } }
+  return <section className="page compact-page"><div className="page-title left"><p className="eyebrow">ADMIN ONLY · REAL DATABASE</p><h1>Панель <strong>свинобосса</strong></h1><p>Управляй игроками, кейсами, предметами, промокодами, чатом и журналом действий.</p></div>{tab === 'cases' && caseEditor !== undefined && <CaseWorkshop token={token} existing={caseEditor || undefined} onClose={() => setCaseEditor(undefined)} onSaved={() => { setCaseEditor(undefined); load(); toast('Кейс и его состав сохранены') }}/>}<div className="profile-columns"><section className="panel"><h3>Разделы</h3>{([['users','Игроки'],['cases','Кейсы'],['items','Предметы'],['promos','Промокоды'],['chat','Модерация чата'],['logs','Логи']] as const).map(([id,label]) => <button className="login" style={{ display: 'block', width: '100%', margin: '7px 0', textAlign: 'left' }} key={id} onClick={() => { setTab(id); setCaseEditor(undefined) }}>{tab === id ? '● ' : '○ '}{label}</button>)}</section><section className="panel"><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><h3>{tab === 'users' ? 'Игроки' : tab === 'cases' ? 'Кейсы' : tab === 'items' ? 'Предметы' : tab === 'promos' ? 'Промокоды' : tab === 'chat' ? 'Модерация чата' : 'Журнал'}</h3>{tab === 'cases' && <button className="pig-button" onClick={() => setCaseEditor(null)}>+ Кейс</button>}{tab === 'promos' && <button className="pig-button" onClick={newPromo}>+ Промокод</button>}{tab === 'items' && <button className="pig-button" onClick={addItem}>+ Предмет</button>}</div>{tab === 'users' && <><button className="admin-danger" onClick={resetEconomy}>⚠ Очистить всем баланс и скины</button>{users.map((item) => <div className="transaction" key={item.id}><span><b>{item.username}</b><br/><small>{item.email} · {item.isBanned ? '🚫 Забанен' : item.muteUntil ? '🔇 Мут' : '✅ Активен'}</small></span><b>{coins(item.balance)} SC</b><button className="login" onClick={() => balance(item.id, 'ADD')}>+SC</button><button className="login" onClick={() => balance(item.id, 'REMOVE')}>−SC</button><button className="login" onClick={() => status(item.id, { isBanned: !item.isBanned }, item.isBanned ? 'Бан снят' : 'Игрок забанен')}>{item.isBanned ? 'Разбан' : 'Бан'}</button><button className="login" onClick={() => status(item.id, { muteMinutes: item.muteUntil ? 0 : 60 }, item.muteUntil ? 'Мут снят' : 'Мут на 60 минут')}>{item.muteUntil ? 'Снять мут' : 'Мут'}</button><button className="login" onClick={() => details(item.id)}>Инвентарь</button></div>)}</>}{tab === 'cases' && rows.map((item) => <div className="transaction" key={item.id}><span><b>{item.name}</b><br/><small>{item.active ? '✅ Активен' : '⏸ Отключён'} · {item.items?.length || 0} предметов · {item.collection}</small></span><b>{coins(item.price)} SC</b><button className="login" onClick={() => setCaseEditor(item)}>Редактор</button><button className="login" onClick={() => toggleCase(item)}>{item.active ? 'Отключить' : 'Включить'}</button></div>)}{tab === 'items' && rows.map((item) => <div className="transaction" key={item.id}><span><b>{item.name}</b><br/><small>{item.rarity} · {item.wear} · {item.active ? '✅ В дропе' : '⏸ Скрыт'}</small></span><b>{coins(item.price)} SC</b><button className="login" onClick={() => editItem(item)}>Изменить</button><button className="login" onClick={() => toggleItem(item)}>{item.active ? 'Скрыть' : 'Включить'}</button></div>)}{tab === 'promos' && rows.map((item) => <div className="transaction" key={item.id}><span><b>{item.code}</b><br/><small>{item.active ? '✅ Активен' : '⏸ Отключён'} · {coins(Number(item.rewardValue || 0))} SC</small></span><b>{item.uses}/{item.maxUses}</b><button className="login" onClick={() => togglePromo(item)}>{item.active ? 'Отключить' : 'Включить'}</button></div>)}{tab === 'chat' && rows.map((item) => <div className="transaction" key={item.id}><span><b>{item.user?.username}</b><br/><small>{item.message} · {new Date(item.createdAt).toLocaleString('ru-RU')}</small></span><button className="login" onClick={() => removeMessage(item.id)}>Удалить</button></div>)}{tab === 'logs' && rows.map((item) => <div className="transaction" key={item.id}><span><b>{item.action}</b><br/><small>{item.admin?.email || 'admin'} · {new Date(item.createdAt).toLocaleString('ru-RU')}</small></span></div>)}</section></div></section>
+}
+
+function CaseWorkshop({ token, existing, onClose, onSaved }: { token: string; existing?: any; onClose: () => void; onSaved: () => void }) {
+  const [items, setItems] = useState<(Skin & { active: boolean })[]>([])
+  const [draft, setDraft] = useState({ name: existing?.name || '', slug: existing?.slug || '', price: existing?.price ? String(existing.price / 100) : '', image: existing?.image || '', collection: existing?.collection || 'Свиноохотники' })
+  const [weights, setWeights] = useState<Record<string, number>>(() => Object.fromEntries((existing?.items || []).map((entry: any) => [entry.itemId || entry.item?.id, entry.weight])))
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { request('/api/admin/items', token).then(setItems).catch(() => undefined) }, [token])
+  const selected = Object.entries(weights).filter(([, weight]) => weight > 0)
+  const setWeight = (id: string, weight: number) => setWeights((current) => ({ ...current, [id]: weight }))
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const price = Math.round(Number(draft.price) * 100)
+    if (!draft.name || !draft.slug || !draft.image || !draft.collection || !price || !selected.length) return
+    setSaving(true)
+    try {
+      const payload = { ...draft, price, items: selected.map(([itemId, weight]) => ({ itemId, weight })) }
+      if (existing?.id) {
+        await request(`/api/admin/cases/${existing.id}`, token, { method: 'PATCH', body: JSON.stringify(payload) })
+        await request(`/api/admin/cases/${existing.id}/items`, token, { method: 'PUT', body: JSON.stringify({ items: payload.items }) })
+      } else await request('/api/admin/cases', token, { method: 'POST', body: JSON.stringify(payload) })
+      onSaved()
+    } finally { setSaving(false) }
+  }
+  return <form className="case-workshop" onSubmit={submit}><div className="workshop-head"><div><p className="eyebrow">КОНСТРУКТОР КЕЙСОВ</p><h2>{existing ? `Редактор: ${existing.name}` : 'Новый кейс'}</h2><p>Выбери предметы, укажи им веса и сохрани всё одной кнопкой.</p></div><button type="button" className="login" onClick={onClose}>Закрыть ×</button></div><div className="workshop-fields"><label>Название<input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })}/></label><label>Slug<input required disabled={!!existing} pattern="[a-z0-9-]{3,64}" value={draft.slug} onChange={(event) => setDraft({ ...draft, slug: event.target.value.toLowerCase() })}/></label><label>Цена, SC<input required type="number" min="1" value={draft.price} onChange={(event) => setDraft({ ...draft, price: event.target.value })}/></label><label>Коллекция<input required value={draft.collection} onChange={(event) => setDraft({ ...draft, collection: event.target.value })}/></label><label className="wide">Ссылка на обложку<input required type="url" value={draft.image} onChange={(event) => setDraft({ ...draft, image: event.target.value })}/></label></div><div className="workshop-actions"><span>В составе: <b>{selected.length}</b> · Сумма весов: <b>{selected.reduce((sum, [, weight]) => sum + weight, 0)}</b></span><button type="button" className="login" onClick={() => setWeights(Object.fromEntries(items.slice(0, 12).map((item, index) => [item.id, Math.max(1, Math.round(500 / (index + 1)))])))}>Быстрая основа</button><button className="pig-button" disabled={saving}>{saving ? 'Сохраняем…' : 'Сохранить кейс →'}</button></div><div className="workshop-items">{items.map((item) => <label className={`workshop-item ${weights[item.id] ? 'picked' : ''}`} key={item.id}><input type="checkbox" checked={!!weights[item.id]} onChange={(event) => setWeight(item.id, event.target.checked ? Math.max(weights[item.id] || 0, 10) : 0)}/><img src={item.image} alt="" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = '/skin-fallback.svg' }}/><span><b>{item.name}</b><small>{item.wear} · {coins(item.price)} SC</small></span><input aria-label={`Вес ${item.name}`} disabled={!weights[item.id]} type="number" min="1" value={weights[item.id] || ''} onChange={(event) => setWeight(item.id, Math.max(1, Number(event.target.value)))}/></label>)}</div></form>
+}

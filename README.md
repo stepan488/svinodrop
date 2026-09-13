@@ -1,0 +1,48 @@
+# SvinoDrop
+
+Игровой сервис с полностью виртуальными свинокойнами и предметами. Никаких депозитов, вывода или обмена на реальные деньги.
+
+## Запуск локально
+
+1. Установите и запустите PostgreSQL, создайте базу `svinodrop`.
+2. Скопируйте `.env.example` в `backend/.env`, укажите `DATABASE_URL`, `JWT_SECRET` и пароль администратора.
+3. В первом терминале выполните:
+
+   ```powershell
+   cd backend
+   npx prisma db push
+   npx prisma db seed
+   npm run dev
+   ```
+
+4. Во втором терминале:
+
+   ```powershell
+   cd frontend
+   npm run dev
+   ```
+
+Откройте [http://localhost:5173](http://localhost:5173). Администратор создаётся при старте API только из `ADMIN_EMAIL` и `ADMIN_PASSWORD`; пароль не попадает в репозиторий.
+
+## Что реализовано
+
+- React/Vite интерфейс: кейсы, 1–4 одновременных открытия, инвентарь, профиль, промокоды, realtime-чат и live-лента без преждевременного спойлера.
+- Апгрейд предмета с быстрыми x2/x3/x5/x10/x25, серверным расчётом шанса и анимацией результата.
+- PostgreSQL/Prisma модели для пользователей, инвентаря, баланса и операций, кейсов и весов, дропов, апгрейдов, чата, промокодов и логов администратора.
+- Backend рассчитывает выпадение через криптографический генератор, использует транзакции PostgreSQL, проверяет баланс и инвентарь, а открытия принимают `Idempotency-Key`.
+- Socket.IO выдаёт настоящее число подключённых вкладок, сообщения чата и уже раскрытые дропы.
+
+## Публикация для всех
+
+База уже настоящая: это PostgreSQL в Neon, а не данные в браузере. Пользователи, баланс, инвентарь, дропы, чат и промокоды сохраняются в ней. Перед публикацией обязательно замените текущий короткий пароль администратора и `JWT_SECRET` на уникальные длинные значения.
+
+Самый простой надёжный вариант: **Vercel для сайта + Render для API + Neon для базы**.
+
+1. Создайте приватный репозиторий GitHub из этой папки. Файлы `.env` уже исключены через `.gitignore` — не добавляйте их вручную.
+2. В Render создайте **Web Service** из этого репозитория. Укажите `Root Directory: backend`, `Build Command: npm ci && npx prisma generate && npm run build`, `Start Command: npm run start`, `Health Check Path: /api/health`.
+3. В переменные окружения Render добавьте: `DATABASE_URL` (строка Neon), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `CLIENT_URL` (поставите после шага 4). Не задавайте `PORT`: Render выдаст его сам.
+4. В Vercel импортируйте тот же GitHub-репозиторий, укажите `Root Directory: frontend`. Добавьте переменную сборки `VITE_API_URL=https://ВАШ-API.onrender.com` и выполните Deploy.
+5. Скопируйте публичный адрес Vercel (например, `https://svinodrop.vercel.app`) в `CLIENT_URL` у Render и сделайте Redeploy API. Это разрешит сайту обращаться к API и Socket.IO.
+6. Купите домен, добавьте его в Vercel → **Settings → Domains** и внесите DNS-записи, которые покажет Vercel. Затем замените `CLIENT_URL` в Render на `https://ваш-домен` и снова сделайте Redeploy.
+
+Render документирует создание Node/Express Web Service, его публичный URL, переменные окружения и порт; Vercel — развёртывание Vite и переменные с префиксом `VITE_`. [Render: Node/Express](https://render.com/docs/deploy-node-express-app), [Render: Web Services](https://render.com/docs/web-services), [Vercel: Vite](https://vercel.com/docs/frameworks/frontend/vite), [Vercel: домен](https://vercel.com/docs/domains/working-with-domains/add-a-domain).

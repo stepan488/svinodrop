@@ -1,0 +1,202 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id String @id @default(uuid())
+  username String @unique
+  email String @unique
+  passwordHash String
+  avatar String?
+  balance Int @default(0)
+  role String @default("USER")
+  isBanned Boolean @default(false)
+  muteUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastOnline DateTime?
+  dailyCaseClaimedAt DateTime?
+  inventory Inventory[]
+  transactions Transaction[]
+  drops Drop[]
+  upgrades Upgrade[]
+  redemptions PromoRedemption[]
+  messages ChatMessage[]
+  adminLogs AdminLog[] @relation("AdminActions")
+  openings Opening[]
+  wheelBets WheelBet[]
+}
+
+model Item {
+  id String @id
+  name String
+  wear String
+  price Int
+  image String
+  rarity String
+  active Boolean @default(true)
+  caseItems CaseItem[]
+  inventory Inventory[]
+  targetDrops Drop[] @relation("DropItem")
+  sourceUpgrades Upgrade[] @relation("UpgradeSource")
+  targetUpgrades Upgrade[] @relation("UpgradeTarget")
+}
+
+model Case {
+  id String @id @default(uuid())
+  name String
+  slug String @unique
+  image String
+  price Int
+  collection String
+  active Boolean @default(true)
+  items CaseItem[]
+  drops Drop[]
+}
+
+model CaseItem {
+  id String @id @default(uuid())
+  caseId String
+  itemId String
+  weight Int @default(1)
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  @@unique([caseId, itemId])
+}
+
+model Inventory {
+  id String @id @default(uuid())
+  userId String
+  itemId String
+  obtainedFrom String
+  obtainedAt DateTime @default(now())
+  revealed Boolean @default(true)
+  removedAt DateTime?
+  dropId String? @unique
+  upgradeId String? @unique
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item Item @relation(fields: [itemId], references: [id])
+  @@index([userId, removedAt, revealed])
+}
+
+model Transaction {
+  id String @id @default(uuid())
+  userId String
+  type String
+  amount Int
+  description String
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, createdAt])
+}
+
+model Drop {
+  id String @id @default(uuid())
+  userId String
+  itemId String
+  caseId String
+  revealed Boolean @default(false)
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item Item @relation("DropItem", fields: [itemId], references: [id])
+  case Case @relation(fields: [caseId], references: [id])
+}
+
+model Opening {
+  id String @id @default(uuid())
+  userId String
+  key String
+  response Json
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, key])
+}
+
+model Upgrade {
+  id String @id @default(uuid())
+  userId String
+  sourceItemId String
+  targetItemId String
+  chance Int
+  balanceStake Int @default(0)
+  result Boolean
+  revealed Boolean @default(false)
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceItem Item @relation("UpgradeSource", fields: [sourceItemId], references: [id])
+  targetItem Item @relation("UpgradeTarget", fields: [targetItemId], references: [id])
+}
+
+model PromoCode {
+  id String @id @default(uuid())
+  code String @unique
+  rewardType String
+  rewardValue String
+  maxUses Int
+  uses Int @default(0)
+  expiresAt DateTime?
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  redemptions PromoRedemption[]
+}
+
+model PromoRedemption {
+  id String @id @default(uuid())
+  promoId String
+  userId String
+  redeemedAt DateTime @default(now())
+  promo PromoCode @relation(fields: [promoId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([promoId, userId])
+}
+
+model ChatMessage {
+  id String @id @default(uuid())
+  userId String
+  message String
+  createdAt DateTime @default(now())
+  deleted Boolean @default(false)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AdminLog {
+  id String @id @default(uuid())
+  adminId String
+  action String
+  targetUserId String?
+  metadata Json?
+  createdAt DateTime @default(now())
+  admin User @relation("AdminActions", fields: [adminId], references: [id])
+}
+
+model WheelRound {
+  id String @id @default(uuid())
+  status String @default("BETTING")
+  targetMultiplier Int
+  bonusMultiplier Int
+  startsAt DateTime @default(now())
+  bettingClosesAt DateTime
+  settlesAt DateTime
+  settledAt DateTime?
+  createdAt DateTime @default(now())
+  bets WheelBet[]
+  @@index([status, settlesAt])
+}
+
+model WheelBet {
+  id String @id @default(uuid())
+  userId String
+  roundId String
+  targetMultiplier Int
+  amount Int
+  payout Int @default(0)
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  round WheelRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  @@index([roundId, userId])
+}
