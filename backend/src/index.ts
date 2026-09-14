@@ -11,7 +11,15 @@ import { Server } from 'socket.io';
 const prisma = new PrismaClient();
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: process.env.CLIENT_URL || 'http://localhost:5173' } });
+const allowedOrigins = (process.env.CLIENT_URLS || process.env.CLIENT_URL || 'http://localhost:5173').split(',').map((value) => value.trim()).filter(Boolean);
+const corsOptions = {
+  origin(origin: string | undefined, callback: (error: Error | null, allowed?: boolean) => void) {
+    // Direct API checks and same-origin production requests have no Origin.
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origin is not allowed'));
+  },
+};
+const io = new Server(server, { cors: corsOptions });
 const PORT = Number(process.env.PORT || 5000);
 const onlineSockets = new Set<string>();
 const attempts = new Map<string, { count: number; reset: number }>();
@@ -104,7 +112,7 @@ async function settlePendingRewards(userId: string) {
 }
 
 app.set('trust proxy', 1);
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '32kb' }));
 app.use(rateLimit);
 
@@ -490,6 +498,10 @@ io.on('connection', (socket) => {
   onlineSockets.add(socket.id); io.emit('online:count', onlineSockets.size);
   socket.on('disconnect', () => { onlineSockets.delete(socket.id); io.emit('online:count', onlineSockets.size); });
 });
+// Keep scheduled giveaways moving even when nobody has the giveaways page open.
+// If a host was asleep, the first run after wake-up safely settles overdue rounds.
+void ensureAutomaticGiveaways();
+setInterval(() => { void ensureAutomaticGiveaways().catch((error) => console.error('Giveaway scheduler:', error)); }, 60_000).unref();
 async function bootstrapAdmin() {
   const email = process.env.ADMIN_EMAIL?.toLowerCase();
   const password = process.env.ADMIN_PASSWORD;

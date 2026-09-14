@@ -26,8 +26,10 @@
 
 ## Что реализовано
 
-- React/Vite интерфейс: кейсы, 1–4 одновременных открытия, инвентарь, профиль, промокоды, realtime-чат и live-лента без преждевременного спойлера.
-- Апгрейд предмета с быстрыми x2/x3/x5/x10/x25, серверным расчётом шанса и анимацией результата.
+- React/Vite интерфейс: кейсы, 1–5 одновременных открытия, инвентарь, профиль, промокоды, realtime-чат и live-лента без преждевременного спойлера.
+- Апгрейд предмета с быстрыми x2/x3/x5/x10/x25, серверным расчётом шанса и гарантированным завершением анимации — браузер не может оставить попытку в состоянии «крутится».
+- Коллекция «Магические Свиньи»: четыре секретных кейса, открываемые только по одному; вместо рулетки они встряхиваются, сияют и поэтапно раскрывают 1–3 виртуальных предмета, иногда с небольшим бонусом баланса.
+- Розыгрыши: автоматические часовые/дневные/недельные и ручные от администратора. Победитель выбирается сервером после завершения, приз сразу сохраняется в инвентаре.
 - PostgreSQL/Prisma модели для пользователей, инвентаря, баланса и операций, кейсов и весов, дропов, апгрейдов, чата, промокодов и логов администратора.
 - Backend рассчитывает выпадение через криптографический генератор, использует транзакции PostgreSQL, проверяет баланс и инвентарь, а открытия принимают `Idempotency-Key`.
 - Socket.IO выдаёт настоящее число подключённых вкладок, сообщения чата и уже раскрытые дропы.
@@ -39,10 +41,14 @@
 Самый простой надёжный вариант: **Vercel для сайта + Render для API + Neon для базы**.
 
 1. Создайте приватный репозиторий GitHub из этой папки. Файлы `.env` уже исключены через `.gitignore` — не добавляйте их вручную.
-2. В Render создайте **Web Service** из этого репозитория. Укажите `Root Directory: backend`, `Build Command: npm ci && npx prisma generate && npm run build`, `Start Command: npm run start`, `Health Check Path: /api/health`.
-3. В переменные окружения Render добавьте: `DATABASE_URL` (строка Neon), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `CLIENT_URL` (поставите после шага 4). Не задавайте `PORT`: Render выдаст его сам.
+2. В Render создайте **Web Service** из этого репозитория. Укажите `Root Directory: backend`, `Build Command: npm ci && npx prisma db push && npx prisma generate && npm run build`, `Start Command: npm run start`, `Health Check Path: /api/health`.
+3. В переменные окружения Render добавьте: `DATABASE_URL` (строка Neon), `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `CLIENT_URLS` (поставите после шага 4). Не задавайте `PORT`: Render выдаст его сам. Шаблон без секретов есть в `backend/.env.example`.
 4. В Vercel импортируйте тот же GitHub-репозиторий, укажите `Root Directory: frontend`. Добавьте переменную сборки `VITE_API_URL=https://ВАШ-API.onrender.com` и выполните Deploy.
-5. Скопируйте публичный адрес Vercel (например, `https://svinodrop.vercel.app`) в `CLIENT_URL` у Render и сделайте Redeploy API. Это разрешит сайту обращаться к API и Socket.IO.
-6. Купите домен, добавьте его в Vercel → **Settings → Domains** и внесите DNS-записи, которые покажет Vercel. Затем замените `CLIENT_URL` в Render на `https://ваш-домен` и снова сделайте Redeploy.
+5. Скопируйте публичный адрес Vercel (например, `https://svinodrop.vercel.app`) в `CLIENT_URLS` у Render и сделайте Redeploy API. Это разрешит сайту обращаться к API и Socket.IO.
+6. Купите домен, добавьте его в Vercel → **Settings → Domains** и внесите DNS-записи, которые покажет Vercel. Затем замените `CLIENT_URLS` в Render на `https://ваш-домен,https://www.ваш-домен` и снова сделайте Redeploy.
+
+## Как обновлять сайт после публикации
+
+Работа всегда идёт в этой папке. Просто напишите в этом чате, что изменить, — я внесу правки, проверю сборку и сохраню их в Git. После того как Git установлен и репозиторий подключён, в терминале остаётся выполнить `git push`: Vercel и Render сами увидят новый коммит и обновят сайт. Базу вручную трогать не нужно: Render при каждом деплое безопасно применяет актуальную Prisma-схему.
 
 Render документирует создание Node/Express Web Service, его публичный URL, переменные окружения и порт; Vercel — развёртывание Vite и переменные с префиксом `VITE_`. [Render: Node/Express](https://render.com/docs/deploy-node-express-app), [Render: Web Services](https://render.com/docs/web-services), [Vercel: Vite](https://vercel.com/docs/frameworks/frontend/vite), [Vercel: домен](https://vercel.com/docs/domains/working-with-domains/add-a-domain).
