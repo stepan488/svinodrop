@@ -60,6 +60,18 @@ function pickWeighted<T extends { weight: number }>(list: T[]): T {
   for (const item of list) { cursor -= item.weight; if (cursor < 0) return item; }
   return list[list.length - 1];
 }
+function upgradeLandingAngle(chance: number, success: boolean) {
+  // The visible green sector is centred at 180°. The server chooses a random
+  // point inside it for a win, or anywhere outside it for a loss, so the
+  // animation reflects the protected result without always landing dead-centre.
+  const successArc = Math.max(8, Math.min(324, chance * 3.6));
+  const start = 180 - successArc / 2;
+  const arcSteps = Math.max(1, Math.round(successArc));
+  const angle = success
+    ? start + crypto.randomInt(arcSteps)
+    : (start + successArc + crypto.randomInt(Math.max(1, Math.round(360 - successArc)))) % 360;
+  return Math.round(1440 + angle);
+}
 function dailyStatus(lastClaim: Date | null) {
   const nextAt = lastClaim ? new Date(lastClaim.getTime() + 24 * 60 * 60 * 1000) : null;
   return { available: !nextAt || nextAt <= new Date(), nextAt, maxValue: 150000 };
@@ -317,7 +329,7 @@ app.post('/api/daily-case/open', auth, async (req: AuthedRequest, res) => {
 
 app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
   const count = Number(req.body?.count); const requestKey = req.headers['idempotency-key'];
-  if (!Number.isInteger(count) || count < 1 || count > 5 || typeof requestKey !== 'string' || requestKey.length < 12) return res.status(400).json({ error: 'Некорректный запрос открытия.' });
+  if (!Number.isInteger(count) || count < 1 || count > 4 || typeof requestKey !== 'string' || requestKey.length < 12) return res.status(400).json({ error: 'Некорректный запрос открытия.' });
   try {
     const result = await prisma.$transaction(async (tx) => {
       const replay = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: requestKey } } });
@@ -332,13 +344,12 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
       const eligible = caseData.items.filter((entry) => entry.item.active);
       if (!eligible.length) throw new Error('В кейсе нет предметов');
       const magic = caseData.openingStyle === 'MAGIC';
-      // Magical openings are deliberately friendlier than normal cases:
-      // 54% one, 33% two and 13% three reveals. It is still a chance-based
-      // virtual economy rather than a guaranteed profit button.
+      // Magic remains exciting, but is not a profit generator: most casts
+      // reveal one reward and the rare balance bonus only softens a bad roll.
       const magicRoll = crypto.randomInt(100);
-      const magicDropCount = !magic ? count : (magicRoll < 54 ? 1 : magicRoll < 87 ? 2 : 3);
-      const magicBalanceReward = magic && crypto.randomInt(100) < 30
-        ? Math.max(100, Math.round(caseData.price * (16 + crypto.randomInt(21)) / 100)) : 0;
+      const magicDropCount = !magic ? count : (magicRoll < 68 ? 1 : magicRoll < 93 ? 2 : 3);
+      const magicBalanceReward = magic && crypto.randomInt(100) < 18
+        ? Math.max(100, Math.round(caseData.price * (7 + crypto.randomInt(9)) / 100)) : 0;
       await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: total - magicBalanceReward } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'CASE_PURCHASE', amount: -total, description: `Открытие «${caseData.name}» ×${count}` } });
       if (magicBalanceReward) await tx.transaction.create({ data: { userId: user.id, type: 'MAGIC_CASE_COINS', amount: magicBalanceReward, description: `Магический бонус из «${caseData.name}»` } });
@@ -384,6 +395,7 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
       if (target.price <= totalStake) throw new Error('Цель должна быть дороже общей ставки.');
       const chance = Math.max(2, Math.min(90, Math.round((totalStake / target.price) * 90)));
       const success = crypto.randomInt(100) < chance;
+      const landingAngle = upgradeLandingAngle(chance, success);
       await tx.inventory.updateMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null }, data: { removedAt: new Date() } });
       if (balanceStake) {
         await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: balanceStake } } });
@@ -393,7 +405,7 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
       // represented by the protected inventory records removed above.
       const upgrade = await tx.upgrade.create({ data: { userId: req.session!.id, sourceItemId: sources[0].itemId, targetItemId: target.id, chance, balanceStake, result: success } });
       if (success) await tx.inventory.create({ data: { userId: req.session!.id, itemId: target.id, upgradeId: upgrade.id, obtainedFrom: 'upgrade', revealed: true } });
-      return { upgradeId: upgrade.id, success, chance, sources: sources.map((source) => source.item), target, balance: user.balance - balanceStake, balanceStake };
+      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: user.balance - balanceStake, balanceStake };
     }, { isolationLevel: 'Serializable' });
     res.json(outcome);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Апгрейд не выполнен' }); }

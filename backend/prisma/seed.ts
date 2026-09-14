@@ -41,7 +41,7 @@ export const BASE_MARKET_ITEMS = [
 export const MARKET_ITEMS = BASE_MARKET_ITEMS
 
 export const CASES = [
-  { name: 'Генста Свин!', slug: 'gensta-svin', price: 49900, image: 'https://i.ibb.co/tPW2Xyys/b4f6cb58-752e-44ae-885c-bbbe73098ba9-removebg-preview.png', collection: 'Свиноохотники', itemIds: ['1','2','3','4','5','6','7','8','9'], weights: { '1': 12, '2': 15, '3': 22, '4': 28, '5': 35, '6': 45, '7': 65, '8': 320, '9': 420 } },
+  { name: 'Генста Свин!', slug: 'gensta-svin', price: 49900, image: 'https://i.ibb.co/tPW2Xyys/b4f6cb58-752e-44ae-885c-bbbe73098ba9-removebg-preview.png', collection: 'Свиноохотники', itemIds: ['1','2','3','4','5','6','7','8','9'], weights: {} },
   { name: 'Хакер Свин!', slug: 'hacker-svin', price: 99900, image: 'https://i.ibb.co/tpP5yjCF/48eb32a1-02f8-438f-b615-996134c84736-removebg-preview.png', collection: 'Свиноохотники', itemIds: ['4','5','6','7','8','9','10','11','12','13','14'], weights: {} },
   { name: 'Мапер Свин!', slug: 'mapper-svin', price: 199900, image: 'https://i.ibb.co/8qK632y/9129ec80-5503-466d-ad65-5a61220e8d5c-removebg-preview.png', collection: 'Свиноохотники', itemIds: ['8','9','10','11','12','13','14','15','16','17','18','19','20'], weights: {} },
   { name: 'Пиратский Свин!', slug: 'pirate-svin', price: 349900, image: 'https://i.ibb.co/tpc6jfbr/9ff2456a-8ed4-43f4-883d-0d98633f1de0.png', collection: 'Свиноохотники', itemIds: ['13','14','15','16','17','18','19','20','21','22','23','24','25'], weights: {} },
@@ -67,18 +67,22 @@ export function dropWeight(price: number) {
   return Math.max(1, Math.round(100_000 / (price / 100)))
 }
 export function caseWeight(price: number, casePrice: number) {
-  // Items around a case's price are the centre of the distribution. This
-  // avoids both a guaranteed profit and the old heavily low-value return.
-  return Math.max(1, Math.round(1_000 / (1 + Math.abs(price - casePrice) / casePrice)));
+  // The return centre sits below the case price. High-value skins remain
+  // possible, but are no longer frequent enough to make normal openings pay
+  // for themselves over time.
+  const ratio = Math.max(price / casePrice, .01)
+  const centre = Math.exp(-Math.pow(Math.log(ratio / .52), 2) / 1.45)
+  const highPenalty = ratio > 1 ? .48 : 1
+  return Math.max(1, Math.round(35 + 1_050 * centre * highPenalty));
 }
 export function magicWeight(price: number, casePrice: number) {
-  // Magical cases can reveal several prizes, so their pool is centred near
-  // 60% of the case price. The cheapest skins are still possible, but no
-  // longer dominate every opening.
+  // Several prizes can appear in one cast, so magic has a slightly lower
+  // return centre than regular cases.
   const ratio = price / casePrice
-  const centre = Math.exp(-Math.pow(Math.log(Math.max(ratio, .01) / .62), 2) / 1.15)
-  const lowPenalty = ratio < .18 ? .12 : 1
-  return Math.max(2, Math.round(90 + 1_100 * centre * lowPenalty))
+  const centre = Math.exp(-Math.pow(Math.log(Math.max(ratio, .01) / .46), 2) / 1.05)
+  const lowPenalty = ratio < .16 ? .18 : 1
+  const highPenalty = ratio > 1 ? .38 : 1
+  return Math.max(2, Math.round(65 + 980 * centre * lowPenalty * highPenalty))
 }
 
 async function main() {
@@ -96,7 +100,7 @@ async function main() {
 
   for (const config of CASES) {
     const magic = 'openingStyle' in config && config.openingStyle === 'MAGIC'
-    const maxOpen = 'maxOpen' in config ? config.maxOpen : 5
+    const maxOpen = 'maxOpen' in config ? config.maxOpen : 4
     const contentsHidden = 'contentsHidden' in config ? config.contentsHidden : false
     const caseData = await prisma.case.upsert({
       where: { slug: config.slug },
