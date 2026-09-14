@@ -206,11 +206,14 @@ app.post('/api/inventory/:id/sell', auth, async (req: AuthedRequest, res) => {
       const inventory = await tx.inventory.findFirst({ where: { id: req.params.id, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: true } });
       if (!inventory) throw new Error('Предмет уже продан или недоступен.');
       const payout = inventory.item.price;
-      await tx.inventory.update({ where: { id: inventory.id }, data: { removedAt: new Date() } });
+      // Conditional update is the actual anti-double-sale lock. PostgreSQL
+      // re-checks removedAt after a competing request releases its row lock.
+      const marked = await tx.inventory.updateMany({ where: { id: inventory.id, userId: req.session!.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
+      if (marked.count !== 1) throw new Error('Предмет уже продан или обрабатывается.');
       const user = await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'ITEM_SALE', amount: payout, description: `Продажа «${inventory.item.name}»` } });
       return { payout, balance: user.balance };
-    });
+    }, { isolationLevel: 'Serializable' });
     res.json(result);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось продать предмет.' }); }
 });
@@ -220,11 +223,12 @@ app.post('/api/inventory/sell-all', auth, async (req: AuthedRequest, res) => {
       const inventory = await tx.inventory.findMany({ where: { userId: req.session!.id, removedAt: null, revealed: true }, include: { item: true } });
       if (!inventory.length) throw new Error('В инвентаре нет доступных предметов.');
       const payout = inventory.reduce((total, entry) => total + entry.item.price, 0);
-      await tx.inventory.updateMany({ where: { id: { in: inventory.map((entry) => entry.id) } }, data: { removedAt: new Date() } });
+      const marked = await tx.inventory.updateMany({ where: { id: { in: inventory.map((entry) => entry.id) }, userId: req.session!.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
+      if (marked.count !== inventory.length) throw new Error('Инвентарь уже изменился. Обнови страницу и попробуй снова.');
       const user = await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'INVENTORY_SALE', amount: payout, description: `Продажа всех предметов ×${inventory.length}` } });
       return { sold: inventory.length, payout, balance: user.balance };
-    });
+    }, { isolationLevel: 'Serializable' });
     res.json(result);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось продать предметы.' }); }
 });
