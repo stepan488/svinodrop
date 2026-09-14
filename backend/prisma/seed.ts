@@ -49,6 +49,13 @@ export const CASES = [
   { name: 'Мажор Свин', slug: 'major-pig', price: 799900, image: 'https://i.ibb.co/zHtrBHbp/4949a980-100f-4a60-ba88-7617985c3a74.png', collection: 'Свинячий Окуп', itemIds: ['10','11','12','13','14','15','16','17','18','19','20'], weights: {} },
   { name: 'Миллионер Свин', slug: 'millionaire-pig', price: 1499900, image: 'https://i.ibb.co/QFjc9f5x/7873dd36-8b67-44ac-9219-a7daf275efb3.png', collection: 'Свинячий Окуп', itemIds: ['14','15','16','17','18','19','20','21','22','23'], weights: {} },
   { name: 'Миллиардер Свин', slug: 'billionaire-pig', price: 3499900, image: 'https://i.ibb.co/SXLJzPXt/c7760d81-66b9-4df6-a8ab-a21f573f6474.png', collection: 'Свинячий Окуп', itemIds: ['18','19','20','21','22','23','24','25','26','27','28'], weights: {} },
+  // Magic cases hide their contents and never use the standard roulette.
+  // The short lists and low-biased weights keep multi-drops exciting without
+  // making the collection a guaranteed profit machine.
+  { name: 'Волшебник Свин', slug: 'wizard-pig', price: 199900, image: 'https://i.ibb.co/RT84L404/746c0f7b-65de-46a0-a366-d924619e1aac.png', collection: 'Магические Свиньи', itemIds: ['1','2','3','4','5','6','7','8','9','10','11','12'], weights: {}, openingStyle: 'MAGIC', maxOpen: 1, contentsHidden: true },
+  { name: 'Ядовитый Волшебник Свин', slug: 'poison-wizard-pig', price: 399900, image: 'https://i.ibb.co/Y445H4BK/0d5fe353-9512-488c-9f76-504db1cc3276.png', collection: 'Магические Свиньи', itemIds: ['2','3','4','5','6','7','8','9','10','11','12','13','14'], weights: {}, openingStyle: 'MAGIC', maxOpen: 1, contentsHidden: true },
+  { name: 'Демонический Волшебник Свин', slug: 'demon-wizard-pig', price: 899900, image: 'https://i.ibb.co/1JfThvvc/ede1a3e2-ccde-4500-86bd-6a963cae8960.png', collection: 'Магические Свиньи', itemIds: ['5','6','7','8','9','10','11','12','13','14','15','16','17','18'], weights: {}, openingStyle: 'MAGIC', maxOpen: 1, contentsHidden: true },
+  { name: 'Главный Волшебник Свин', slug: 'arch-wizard-pig', price: 1799900, image: 'https://i.ibb.co/Rph2Q919/0dade8c9-2b72-4a95-a2b3-2889c429bd26-removebg-preview.png', collection: 'Магические Свиньи', itemIds: ['8','9','10','11','12','13','14','15','16','17','18','19','20','21'], weights: {}, openingStyle: 'MAGIC', maxOpen: 1, contentsHidden: true },
 ] as const
 
 export function dropWeight(price: number) {
@@ -59,6 +66,11 @@ export function caseWeight(price: number, casePrice: number) {
   // Items around a case's price are the centre of the distribution. This
   // avoids both a guaranteed profit and the old heavily low-value return.
   return Math.max(1, Math.round(1_000 / (1 + Math.abs(price - casePrice) / casePrice)));
+}
+export function magicWeight(price: number, casePrice: number) {
+  // Stronger than a regular case bias: magical cases can award 1–3 skins.
+  // This keeps their average virtual payout safely below the purchase price.
+  return Math.max(1, Math.round(1_500 / Math.pow(1 + price / Math.max(casePrice * 0.24, 1), 2)))
 }
 
 async function main() {
@@ -75,15 +87,18 @@ async function main() {
   await prisma.inventory.updateMany({ where: { itemId: { notIn: MARKET_ITEMS.map((item) => item.id) }, removedAt: null }, data: { removedAt: new Date() } })
 
   for (const config of CASES) {
+    const magic = 'openingStyle' in config && config.openingStyle === 'MAGIC'
+    const maxOpen = 'maxOpen' in config ? config.maxOpen : 5
+    const contentsHidden = 'contentsHidden' in config ? config.contentsHidden : false
     const caseData = await prisma.case.upsert({
       where: { slug: config.slug },
-      update: { name: config.name, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', active: true },
-      create: { name: config.name, slug: config.slug, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники' },
+      update: { name: config.name, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', active: true, openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden },
+      create: { name: config.name, slug: config.slug, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden },
     })
     const contents = MARKET_ITEMS.filter((item) => (config.itemIds as readonly string[]).includes(item.id))
     await prisma.$transaction([
       prisma.caseItem.deleteMany({ where: { caseId: caseData.id } }),
-      prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || caseWeight(item.price, config.price) })) }),
+      prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || (magic ? magicWeight(item.price, config.price) : caseWeight(item.price, config.price)) })) }),
     ])
   }
 

@@ -56,6 +56,44 @@ function dailyStatus(lastClaim: Date | null) {
   const nextAt = lastClaim ? new Date(lastClaim.getTime() + 24 * 60 * 60 * 1000) : null;
   return { available: !nextAt || nextAt <= new Date(), nextAt, maxValue: 150000 };
 }
+type AutoGiveaway = { kind: 'HOURLY' | 'DAILY' | 'WEEKLY'; title: string; entryPrice: number; min: number; max: number; start: Date; end: Date };
+function startOfDay(date: Date) { const value = new Date(date); value.setHours(0, 0, 0, 0); return value; }
+function automaticGiveawayWindows(now = new Date()): AutoGiveaway[] {
+  const hour = new Date(now); hour.setMinutes(0, 0, 0);
+  const day = startOfDay(now);
+  const week = startOfDay(now); week.setDate(week.getDate() - ((week.getDay() + 6) % 7));
+  return [
+    { kind: 'HOURLY', title: 'Часовой хрюк-розыгрыш', entryPrice: 2500, min: 50000, max: 350000, start: hour, end: new Date(hour.getTime() + 3_600_000) },
+    { kind: 'DAILY', title: 'Ежедневный свиноприз', entryPrice: 10000, min: 250000, max: 1_250_000, start: day, end: new Date(day.getTime() + 86_400_000) },
+    { kind: 'WEEKLY', title: 'Еженедельный свинокуш', entryPrice: 50000, min: 750000, max: 3_500_000, start: week, end: new Date(week.getTime() + 604_800_000) },
+  ];
+}
+async function settleGiveaways(now = new Date()) {
+  const finished = await prisma.giveaway.findMany({ where: { active: true, endsAt: { lte: now } }, include: { entries: { select: { userId: true } } } });
+  for (const giveaway of finished) {
+    const entry = giveaway.entries.length ? giveaway.entries[crypto.randomInt(giveaway.entries.length)] : null;
+    // Mark it closed first. Only the transaction that changes ACTIVE -> closed
+    // gets to issue a prize, even if two visitors open the page at once.
+    await prisma.$transaction(async (tx) => {
+      const locked = await tx.giveaway.updateMany({ where: { id: giveaway.id, active: true, endsAt: { lte: now } }, data: { active: false, winnerUserId: entry?.userId || null } });
+      if (!locked.count || !entry) return;
+      await tx.inventory.create({ data: { userId: entry.userId, itemId: giveaway.prizeItemId, obtainedFrom: `giveaway:${giveaway.id}`, revealed: true } });
+      await tx.transaction.create({ data: { userId: entry.userId, type: 'GIVEAWAY_WIN', amount: 0, description: `Победа в розыгрыше «${giveaway.title}»` } });
+    });
+  }
+}
+async function ensureAutomaticGiveaways() {
+  const now = new Date();
+  await settleGiveaways(now);
+  for (const config of automaticGiveawayWindows(now)) {
+    const id = `auto-${config.kind}-${config.start.toISOString()}`;
+    const exists = await prisma.giveaway.findUnique({ where: { id } });
+    if (exists) continue;
+    const prizes = await prisma.item.findMany({ where: { active: true, price: { gte: config.min, lte: config.max } }, select: { id: true } });
+    if (!prizes.length) continue;
+    await prisma.giveaway.create({ data: { id, title: config.title, kind: config.kind, prizeItemId: prizes[crypto.randomInt(prizes.length)].id, entryPrice: config.entryPrice, startsAt: config.start, endsAt: config.end, automatic: true } }).catch(() => undefined);
+  }
+}
 async function settlePendingRewards(userId: string) {
   // A case/upgrade result is already decided inside its DB transaction. If a
   // player refreshes mid-animation, reveal every protected prize on login.
@@ -73,7 +111,8 @@ app.use(rateLimit);
 app.get('/api/health', (_req, res) => res.json({ ok: true, online: onlineSockets.size }));
 app.get('/api/cases', async (_req, res) => {
   const cases = await prisma.case.findMany({ where: { active: true }, include: { items: { include: { item: { select: itemSelect } }, orderBy: { weight: 'desc' } } }, orderBy: { price: 'asc' } });
-  res.json(cases);
+  // Magical cases deliberately keep the possible prizes secret from players.
+  res.json(cases.map((entry) => entry.contentsHidden ? { ...entry, items: [] } : entry));
 });
 app.get('/api/items', async (_req, res) => res.json(await prisma.item.findMany({ where: { active: true }, select: itemSelect, orderBy: { price: 'asc' } })));
 app.get('/api/leaderboard', async (_req, res) => {
@@ -93,6 +132,29 @@ app.get('/api/leaderboard', async (_req, res) => {
     .slice(0, 100)
     .map((entry, index) => ({ ...entry, rank: index + 1 }));
   res.json(board);
+});
+app.get('/api/giveaways', async (_req, res) => {
+  await ensureAutomaticGiveaways();
+  const giveaways = await prisma.giveaway.findMany({ where: { active: true }, include: { prizeItem: { select: itemSelect }, _count: { select: { entries: true } } }, orderBy: { endsAt: 'asc' } });
+  res.json(giveaways.map((giveaway) => ({ ...giveaway, entries: giveaway._count.entries })));
+});
+app.post('/api/giveaways/:id/enter', auth, async (req: AuthedRequest, res) => {
+  try {
+    await ensureAutomaticGiveaways();
+    const result = await prisma.$transaction(async (tx) => {
+      const giveaway = await tx.giveaway.findFirst({ where: { id: req.params.id, active: true, startsAt: { lte: new Date() }, endsAt: { gt: new Date() } } });
+      if (!giveaway) throw new Error('Этот розыгрыш уже завершён или ещё не начался.');
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      if (user.balance < giveaway.entryPrice) throw new Error('Недостаточно свинокоинов для участия.');
+      const previous = await tx.giveawayEntry.findUnique({ where: { giveawayId_userId: { giveawayId: giveaway.id, userId: user.id } } });
+      if (previous) throw new Error('Ты уже участвуешь в этом розыгрыше.');
+      await tx.giveawayEntry.create({ data: { giveawayId: giveaway.id, userId: user.id } });
+      const updated = await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: giveaway.entryPrice } } });
+      await tx.transaction.create({ data: { userId: user.id, type: 'GIVEAWAY_ENTRY', amount: -giveaway.entryPrice, description: `Участие в «${giveaway.title}»` } });
+      return { balance: updated.balance, giveawayId: giveaway.id };
+    }, { isolationLevel: 'Serializable' });
+    res.json(result);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось принять участие.' }); }
 });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -199,16 +261,24 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
       if (replay) return replay.response as unknown as { balance: number; caseName: string; drops: Array<{ dropId: string; inventoryId: string; item: typeof itemSelect }> };
       const caseData = await tx.case.findFirst({ where: { id: req.params.caseId, active: true }, include: { items: { include: { item: { select: itemSelect } } } } });
       if (!caseData) throw new Error('Кейс недоступен');
+      if (count > caseData.maxOpen) throw new Error(caseData.maxOpen === 1 ? 'Этот магический кейс можно открыть только по одному.' : `За раз можно открыть до ${caseData.maxOpen} кейсов.`);
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       if (user.isBanned) throw new Error('Аккаунт заблокирован');
       const total = caseData.price * count;
       if (user.balance < total) throw new Error('Недостаточно свинокоинов');
       const eligible = caseData.items.filter((entry) => entry.item.active);
       if (!eligible.length) throw new Error('В кейсе нет предметов');
-      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: total } } });
+      const magic = caseData.openingStyle === 'MAGIC';
+      // 76% one item, 20% two, 4% three. A small coin bonus creates a
+      // separate surprise without turning the collection into free balance.
+      const magicDropCount = !magic ? count : (crypto.randomInt(100) < 76 ? 1 : crypto.randomInt(100) < 84 ? 2 : 3);
+      const magicBalanceReward = magic && crypto.randomInt(100) < 18
+        ? Math.max(100, Math.round(caseData.price * (6 + crypto.randomInt(13)) / 100)) : 0;
+      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: total - magicBalanceReward } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'CASE_PURCHASE', amount: -total, description: `Открытие «${caseData.name}» ×${count}` } });
+      if (magicBalanceReward) await tx.transaction.create({ data: { userId: user.id, type: 'MAGIC_CASE_COINS', amount: magicBalanceReward, description: `Магический бонус из «${caseData.name}»` } });
       const drops = [] as Array<{ dropId: string; inventoryId: string; item: typeof eligible[number]['item'] }>;
-      for (let i = 0; i < count; i += 1) {
+      for (let i = 0; i < magicDropCount; i += 1) {
         const winner = pickWeighted(eligible);
         const drop = await tx.drop.create({ data: { userId: user.id, itemId: winner.itemId, caseId: caseData.id } });
         // A prize belongs to the player as soon as this transaction commits.
@@ -217,7 +287,7 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
         const inventory = await tx.inventory.create({ data: { userId: user.id, itemId: winner.itemId, dropId: drop.id, obtainedFrom: `case:${caseData.slug}`, revealed: true } });
         drops.push({ dropId: drop.id, inventoryId: inventory.id, item: winner.item! });
       }
-      const response = { balance: user.balance - total, caseName: caseData.name, drops };
+      const response = { balance: user.balance - total + magicBalanceReward, caseName: caseData.name, drops, balanceReward: magicBalanceReward, openingStyle: caseData.openingStyle };
       await tx.opening.create({ data: { userId: user.id, key: requestKey, response } });
       return response;
     }, { isolationLevel: 'Serializable' });
@@ -366,6 +436,22 @@ app.post('/api/admin/promos', auth, admin, async (req: AuthedRequest, res) => {
 });
 app.patch('/api/admin/promos/:id', auth, admin, async (req: AuthedRequest, res) => { const { active, rewardValue, maxUses, expiresAt } = req.body ?? {}; const promo = await prisma.promoCode.update({ where: { id: req.params.id }, data: { ...(typeof active === 'boolean' ? { active } : {}), ...(rewardValue !== undefined ? { rewardValue: String(rewardValue) } : {}), ...(Number.isInteger(maxUses) ? { maxUses } : {}), ...(expiresAt !== undefined ? { expiresAt: expiresAt ? new Date(expiresAt) : null } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'PROMO_UPDATE', metadata: { promoId: promo.id } } }); res.json(promo); });
 app.get('/api/admin/items', auth, admin, async (_req, res) => res.json(await prisma.item.findMany({ orderBy: { price: 'asc' } })));
+app.get('/api/admin/giveaways', auth, admin, async (_req, res) => {
+  await ensureAutomaticGiveaways();
+  res.json(await prisma.giveaway.findMany({ include: { prizeItem: { select: itemSelect }, winner: { select: { username: true } }, _count: { select: { entries: true } } }, orderBy: { endsAt: 'asc' }, take: 100 }));
+});
+app.post('/api/admin/giveaways', auth, admin, async (req: AuthedRequest, res) => {
+  const { title, prizeItemId, entryPrice, startsAt, endsAt } = req.body ?? {};
+  const start = new Date(startsAt); const end = new Date(endsAt);
+  if (typeof title !== 'string' || title.trim().length < 3 || typeof prizeItemId !== 'string' || !money(entryPrice) || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return res.status(400).json({ error: 'Проверьте название, приз, цену входа и даты.' });
+  try {
+    const prize = await prisma.item.findFirst({ where: { id: prizeItemId, active: true } });
+    if (!prize) throw new Error('Выбранный приз недоступен.');
+    const giveaway = await prisma.giveaway.create({ data: { title: title.trim(), kind: 'CUSTOM', prizeItemId, entryPrice, startsAt: start, endsAt: end } });
+    await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'GIVEAWAY_CREATE', metadata: { giveawayId: giveaway.id, prizeItemId, entryPrice } } });
+    res.status(201).json(giveaway);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать розыгрыш.' }); }
+});
 app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); const item = await prisma.item.create({ data: { id, name, wear, price, image, rarity } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE', metadata: { itemId: item.id } } }); res.status(201).json(item); });
 app.patch('/api/admin/items/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, wear, price, image, rarity, active } = req.body ?? {}; const item = await prisma.item.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(typeof wear === 'string' ? { wear } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof rarity === 'string' ? { rarity } : {}), ...(typeof active === 'boolean' ? { active } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_UPDATE', metadata: { itemId: item.id } } }); res.json(item); });
 app.get('/api/admin/cases', auth, admin, async (_req, res) => res.json(await prisma.case.findMany({ include: { items: { include: { item: { select: itemSelect } } } } })));

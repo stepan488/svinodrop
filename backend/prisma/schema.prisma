@@ -30,6 +30,8 @@ model User {
   adminLogs AdminLog[] @relation("AdminActions")
   openings Opening[]
   wheelBets WheelBet[]
+  giveawayEntries GiveawayEntry[]
+  wonGiveaways Giveaway[] @relation("GiveawayWinner")
 }
 
 model Item {
@@ -45,6 +47,7 @@ model Item {
   targetDrops Drop[] @relation("DropItem")
   sourceUpgrades Upgrade[] @relation("UpgradeSource")
   targetUpgrades Upgrade[] @relation("UpgradeTarget")
+  giveawayPrizes Giveaway[]
 }
 
 model Case {
@@ -57,6 +60,9 @@ model Case {
   active Boolean @default(true)
   items CaseItem[]
   drops Drop[]
+  openingStyle String @default("REEL")
+  maxOpen Int @default(5)
+  contentsHidden Boolean @default(false)
 }
 
 model CaseItem {
@@ -199,4 +205,33 @@ model WheelBet {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   round WheelRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
   @@index([roundId, userId])
+}
+
+model Giveaway {
+  id String @id @default(uuid())
+  title String
+  kind String @default("CUSTOM")
+  prizeItemId String
+  entryPrice Int
+  startsAt DateTime
+  endsAt DateTime
+  active Boolean @default(true)
+  automatic Boolean @default(false)
+  winnerUserId String?
+  createdAt DateTime @default(now())
+  prizeItem Item @relation(fields: [prizeItemId], references: [id])
+  winner User? @relation("GiveawayWinner", fields: [winnerUserId], references: [id])
+  entries GiveawayEntry[]
+  @@index([active, startsAt, endsAt])
+}
+
+model GiveawayEntry {
+  id String @id @default(uuid())
+  giveawayId String
+  userId String
+  createdAt DateTime @default(now())
+  giveaway Giveaway @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([giveawayId, userId])
+  @@index([giveawayId, createdAt])
 }
