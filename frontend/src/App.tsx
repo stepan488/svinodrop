@@ -236,7 +236,8 @@ function UpgradeDial({ chance, phase, result, mode }: { chance: number; phase: '
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.success ? 1620 : 1350 + Math.min(80, safeChance)
   return <div className={`sd-upgrade ${phase} ${result ? 'ready' : ''} ${result?.success ? 'success' : 'failure'}`} style={{ '--success-size': `${safeChance * 3.6}deg`, '--needle-end': `${endAngle}deg`, '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
-    <div className="sd-upgrade-disc"><div className="sd-ticks"/><div className="sd-pig-halo"><div className="sd-pig-orbit"><i>🐷</i><i>🐽</i><i>🐷</i><i>🐽</i></div></div><span className="sd-success-zone" aria-label="Зона успеха"/><div className="sd-core"><span className="sd-snout">🐽</span><small>{phase === 'spinning' ? 'СТРЕЛКА В ПОЛЁТЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>SVINO LUCK</em></div></div>
+    <div className="sd-upgrade-disc"><div className="sd-ticks"/><div className="sd-core"><span className="sd-snout">🐽</span><small>{phase === 'spinning' ? 'СТРЕЛКА В ПОЛЁТЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>SVINO LUCK</em></div></div>
+    <div className="sd-pig-halo" aria-hidden="true"><div className="sd-pig-orbit"><i>🐷</i><i>🐽</i><i>🐷</i><i>🐽</i></div></div>
     <div className="sd-needle"><i/></div>
   </div>
 }
