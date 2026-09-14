@@ -68,9 +68,13 @@ export function caseWeight(price: number, casePrice: number) {
   return Math.max(1, Math.round(1_000 / (1 + Math.abs(price - casePrice) / casePrice)));
 }
 export function magicWeight(price: number, casePrice: number) {
-  // Stronger than a regular case bias: magical cases can award 1–3 skins.
-  // This keeps their average virtual payout safely below the purchase price.
-  return Math.max(1, Math.round(1_500 / Math.pow(1 + price / Math.max(casePrice * 0.24, 1), 2)))
+  // Magical cases can reveal several prizes, so their pool is centred near
+  // 60% of the case price. The cheapest skins are still possible, but no
+  // longer dominate every opening.
+  const ratio = price / casePrice
+  const centre = Math.exp(-Math.pow(Math.log(Math.max(ratio, .01) / .62), 2) / 1.15)
+  const lowPenalty = ratio < .18 ? .12 : 1
+  return Math.max(2, Math.round(90 + 1_100 * centre * lowPenalty))
 }
 
 async function main() {

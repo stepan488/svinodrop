@@ -277,11 +277,13 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
       const eligible = caseData.items.filter((entry) => entry.item.active);
       if (!eligible.length) throw new Error('В кейсе нет предметов');
       const magic = caseData.openingStyle === 'MAGIC';
-      // 76% one item, 20% two, 4% three. A small coin bonus creates a
-      // separate surprise without turning the collection into free balance.
-      const magicDropCount = !magic ? count : (crypto.randomInt(100) < 76 ? 1 : crypto.randomInt(100) < 84 ? 2 : 3);
-      const magicBalanceReward = magic && crypto.randomInt(100) < 18
-        ? Math.max(100, Math.round(caseData.price * (6 + crypto.randomInt(13)) / 100)) : 0;
+      // Magical openings are deliberately friendlier than normal cases:
+      // 54% one, 33% two and 13% three reveals. It is still a chance-based
+      // virtual economy rather than a guaranteed profit button.
+      const magicRoll = crypto.randomInt(100);
+      const magicDropCount = !magic ? count : (magicRoll < 54 ? 1 : magicRoll < 87 ? 2 : 3);
+      const magicBalanceReward = magic && crypto.randomInt(100) < 30
+        ? Math.max(100, Math.round(caseData.price * (16 + crypto.randomInt(21)) / 100)) : 0;
       await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: total - magicBalanceReward } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'CASE_PURCHASE', amount: -total, description: `Открытие «${caseData.name}» ×${count}` } });
       if (magicBalanceReward) await tx.transaction.create({ data: { userId: user.id, type: 'MAGIC_CASE_COINS', amount: magicBalanceReward, description: `Магический бонус из «${caseData.name}»` } });
