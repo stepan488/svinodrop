@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/src/index.js"
+    "start": "node dist/prisma/seed.js && node dist/src/index.js"
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",

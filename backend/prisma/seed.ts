@@ -49,6 +49,10 @@ export const CASES = [
   { name: 'Мажор Свин', slug: 'major-pig', price: 799900, image: 'https://i.ibb.co/zHtrBHbp/4949a980-100f-4a60-ba88-7617985c3a74.png', collection: 'Свинячий Окуп', itemIds: ['10','11','12','13','14','15','16','17','18','19','20'], weights: {} },
   { name: 'Миллионер Свин', slug: 'millionaire-pig', price: 1499900, image: 'https://i.ibb.co/QFjc9f5x/7873dd36-8b67-44ac-9219-a7daf275efb3.png', collection: 'Свинячий Окуп', itemIds: ['14','15','16','17','18','19','20','21','22','23'], weights: {} },
   { name: 'Миллиардер Свин', slug: 'billionaire-pig', price: 3499900, image: 'https://i.ibb.co/SXLJzPXt/c7760d81-66b9-4df6-a8ab-a21f573f6474.png', collection: 'Свинячий Окуп', itemIds: ['18','19','20','21','22','23','24','25','26','27','28'], weights: {} },
+  { name: 'Джордж', slug: 'george-pig', price: 2499900, image: 'https://i.ibb.co/4ZQs3hpH/fef3e74c-e72d-46a6-a2ea-543d16e2cd07.png', collection: 'Свинки Пепы', itemIds: ['17','18','19','20','21','22','23','24'], weights: {} },
+  { name: 'Пеппа', slug: 'peppa-pig', price: 5499900, image: 'https://i.ibb.co/gLQQqmM4/68d4958f-3fc1-492a-9308-ed4a335cdc48.png', collection: 'Свинки Пепы', itemIds: ['20','21','22','23','24','25','26','27'], weights: {} },
+  { name: 'Мама Свин', slug: 'mama-pig', price: 9999900, image: 'https://i.ibb.co/LhtQ2kgL/26c90aa5-bb72-42c8-bdde-7b44562f30b3-removebg-preview.png', collection: 'Свинки Пепы', itemIds: ['22','23','24','25','26','27','28','29'], weights: {} },
+  { name: 'Папа Свин', slug: 'papa-pig', price: 14999900, image: 'https://i.ibb.co/20D5wWcg/2299f886-d122-404b-9d5b-5ab19efc3677.png', collection: 'Свинки Пепы', itemIds: ['24','25','26','27','28','29','30','31'], weights: {} },
   // Magic cases hide their contents and never use the standard roulette.
   // The short lists and low-biased weights keep multi-drops exciting without
   // making the collection a guaranteed profit machine.

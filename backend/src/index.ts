@@ -90,10 +90,42 @@ async function settleGiveaways(now = new Date()) {
     });
   }
 }
-async function ensureAutomaticGiveaways() {
+async function repairDuplicateAutomaticGiveaways() {
+  const automatic = await prisma.giveaway.findMany({
+    where: { active: true, automatic: true, kind: { in: ['HOURLY', 'DAILY', 'WEEKLY'] } },
+    include: { entries: { select: { userId: true } } },
+    // If an old deployment created two rounds, preserve the freshest one.
+    // Older rounds are cancelled below and all of their tickets refunded.
+    orderBy: { startsAt: 'desc' },
+  });
+  const kept = new Set<string>();
+  for (const giveaway of automatic) {
+    if (!kept.has(giveaway.kind)) { kept.add(giveaway.kind); continue; }
+    // Historic duplicate rounds are cancelled, never drawn twice. Every paid
+    // ticket is returned automatically so no player loses coins to the repair.
+    await prisma.$transaction(async (tx) => {
+      const closed = await tx.giveaway.updateMany({ where: { id: giveaway.id, active: true }, data: { active: false } });
+      if (!closed.count) return;
+      for (const entry of giveaway.entries) {
+        await tx.user.update({ where: { id: entry.userId }, data: { balance: { increment: giveaway.entryPrice } } });
+        await tx.transaction.create({ data: { userId: entry.userId, type: 'GIVEAWAY_REFUND', amount: giveaway.entryPrice, description: `Возврат за дублирующий розыгрыш «${giveaway.title}»` } });
+      }
+    });
+  }
+}
+async function syncAutomaticGiveaways() {
   const now = new Date();
   await settleGiveaways(now);
+  await repairDuplicateAutomaticGiveaways();
   for (const config of automaticGiveawayWindows(now)) {
+    // Exactly one live automatic draw of each kind is allowed. A new draw is
+    // created only after the previous one was settled and its prize issued.
+    // This also makes a restarted server safe: it cannot spawn duplicates.
+    const activeRound = await prisma.giveaway.findFirst({
+      where: { active: true, automatic: true, kind: config.kind },
+      select: { id: true },
+    });
+    if (activeRound) continue;
     const id = `auto-${config.kind}-${config.start.toISOString()}`;
     const exists = await prisma.giveaway.findUnique({ where: { id } });
     if (exists) continue;
@@ -101,6 +133,16 @@ async function ensureAutomaticGiveaways() {
     if (!prizes.length) continue;
     await prisma.giveaway.create({ data: { id, title: config.title, kind: config.kind, prizeItemId: prizes[crypto.randomInt(prizes.length)].id, entryPrice: config.entryPrice, startsAt: config.start, endsAt: config.end, automatic: true } }).catch(() => undefined);
   }
+}
+// The scheduler, the public page and the "enter" button can all request a
+// refresh at the same time. One shared task makes this a single queue, so a
+// second automatic round can never be created by a race between requests.
+let automaticGiveawaySync: Promise<void> | null = null;
+function ensureAutomaticGiveaways() {
+  if (!automaticGiveawaySync) {
+    automaticGiveawaySync = syncAutomaticGiveaways().finally(() => { automaticGiveawaySync = null; });
+  }
+  return automaticGiveawaySync;
 }
 async function settlePendingRewards(userId: string) {
   // A case/upgrade result is already decided inside its DB transaction. If a
@@ -144,7 +186,16 @@ app.get('/api/leaderboard', async (_req, res) => {
 app.get('/api/giveaways', async (_req, res) => {
   await ensureAutomaticGiveaways();
   const giveaways = await prisma.giveaway.findMany({ where: { active: true }, include: { prizeItem: { select: itemSelect }, _count: { select: { entries: true } } }, orderBy: { endsAt: 'asc' } });
-  res.json(giveaways.map((giveaway) => ({ ...giveaway, entries: giveaway._count.entries })));
+  // A final output guard keeps the public page clean even while a historic
+  // duplicate is being repaired. Custom admin giveaways stay untouched.
+  const shownKinds = new Set<string>();
+  const visible = giveaways.filter((giveaway) => {
+    if (!giveaway.automatic || !['HOURLY', 'DAILY', 'WEEKLY'].includes(giveaway.kind)) return true;
+    if (shownKinds.has(giveaway.kind)) return false;
+    shownKinds.add(giveaway.kind);
+    return true;
+  });
+  res.json(visible.map((giveaway) => ({ ...giveaway, entries: giveaway._count.entries })));
 });
 app.post('/api/giveaways/:id/enter', auth, async (req: AuthedRequest, res) => {
   try {
@@ -319,27 +370,30 @@ app.post('/api/drops/:dropId/reveal', auth, async (req: AuthedRequest, res) => {
 });
 
 app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
-  const { sourceInventoryId, targetItemId, balanceStake = 0 } = req.body ?? {};
-  if (typeof sourceInventoryId !== 'string' || typeof targetItemId !== 'string' || !Number.isSafeInteger(balanceStake) || balanceStake < 0) return res.status(400).json({ error: 'Выберите предмет, цель и корректную ставку.' });
+  const { sourceInventoryIds, targetItemId, balanceStake = 0 } = req.body ?? {};
+  if (!Array.isArray(sourceInventoryIds) || !sourceInventoryIds.length || sourceInventoryIds.length > 8 || new Set(sourceInventoryIds).size !== sourceInventoryIds.length || sourceInventoryIds.some((id) => typeof id !== 'string') || typeof targetItemId !== 'string' || !Number.isSafeInteger(balanceStake) || balanceStake < 0) return res.status(400).json({ error: 'Выберите от 1 до 8 разных предметов, цель и корректную ставку.' });
   try {
     const outcome = await prisma.$transaction(async (tx) => {
-      const source = await tx.inventory.findFirst({ where: { id: sourceInventoryId, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: true } });
+      const sources = await tx.inventory.findMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: true } });
       const target = await tx.item.findFirst({ where: { id: targetItemId, active: true } });
-      if (!source || !target) throw new Error('Предмет больше недоступен');
+      if (sources.length !== sourceInventoryIds.length || !target) throw new Error('Один из предметов больше недоступен');
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       if (balanceStake > user.balance) throw new Error('На балансе недостаточно свинокоинов для ставки.');
-      const totalStake = source.item.price + balanceStake;
+      const itemsStake = sources.reduce((total, source) => total + source.item.price, 0);
+      const totalStake = itemsStake + balanceStake;
       if (target.price <= totalStake) throw new Error('Цель должна быть дороже общей ставки.');
       const chance = Math.max(2, Math.min(90, Math.round((totalStake / target.price) * 90)));
       const success = crypto.randomInt(100) < chance;
-      await tx.inventory.update({ where: { id: source.id }, data: { removedAt: new Date() } });
+      await tx.inventory.updateMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null }, data: { removedAt: new Date() } });
       if (balanceStake) {
         await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: balanceStake } } });
         await tx.transaction.create({ data: { userId: user.id, type: 'UPGRADE_STAKE', amount: -balanceStake, description: `Ставка балансом на апгрейд «${target.name}»` } });
       }
-      const upgrade = await tx.upgrade.create({ data: { userId: req.session!.id, sourceItemId: source.itemId, targetItemId: target.id, chance, balanceStake, result: success } });
+      // sourceItemId keeps the legacy history relation; the full stake is
+      // represented by the protected inventory records removed above.
+      const upgrade = await tx.upgrade.create({ data: { userId: req.session!.id, sourceItemId: sources[0].itemId, targetItemId: target.id, chance, balanceStake, result: success } });
       if (success) await tx.inventory.create({ data: { userId: req.session!.id, itemId: target.id, upgradeId: upgrade.id, obtainedFrom: 'upgrade', revealed: true } });
-      return { upgradeId: upgrade.id, success, chance, source: source.item, target, balance: user.balance - balanceStake, balanceStake };
+      return { upgradeId: upgrade.id, success, chance, sources: sources.map((source) => source.item), target, balance: user.balance - balanceStake, balanceStake };
     }, { isolationLevel: 'Serializable' });
     res.json(outcome);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Апгрейд не выполнен' }); }
