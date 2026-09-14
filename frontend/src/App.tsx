@@ -16,7 +16,9 @@ type Giveaway = { id: string; title: string; kind: string; entryPrice: number; s
 
 // Local development uses the separate API; a production build can use a
 // configured API subdomain or the same origin without shipping localhost.
-const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000' : '')
+// The public site uses a separate Render service, never the Vercel origin.
+// Local development may still point at a different API through .env.
+const API = import.meta.env.DEV ? (import.meta.env.VITE_API_URL || 'http://localhost:5000') : 'https://svinodrop-api.onrender.com'
 const rarity = (value: string) => `rarity-${value.toLowerCase().replaceAll('-', '')}`
 const coins = (value: number) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value / 100)
 const spinDuration: Record<SpinMode, number> = { FAST: 2200, SLOW: 5200, RISK: 8000 }
@@ -249,7 +251,10 @@ function CaseReel({ pool, winner, phase, compact, onFinished }: { pool: Skin[]; 
 
 function MagicReveal({ data, opening, phase, balanceReward, onFinished }: { data: Case; opening: Drop[] | null; phase: 'idle' | 'spinning' | 'result'; balanceReward: number; onFinished: () => void }) {
   const rewardCount = (opening?.length || 0) + (balanceReward > 0 ? 1 : 0)
-  return <div className={`magic-reveal ${phase}`} onAnimationEnd={(event) => { if (event.currentTarget === event.target && phase === 'spinning' && opening) onFinished() }}><div className="magic-spark one">✦</div><div className="magic-spark two">✧</div><div className="magic-spark three">✦</div><img src={data.image} alt=""/><div className="magic-runes">✧ ✦ ✧</div>{phase === 'idle' && <b>СОСТАВ СКРЫТ<br/><small>1–3 предмета или свинокоинов</small></b>}{phase === 'spinning' && <b>МАГИЯ ВНУТРИ…<br/><small>СВИНОЗАКЛИНАНИЕ РАБОТАЕТ</small></b>}{phase === 'result' && <div className={`magic-rewards rewards-${Math.min(4, Math.max(1, rewardCount))}`}>{opening?.map((drop, index) => <article key={drop.inventoryId} style={{ '--delay': `${index * 160}ms` } as React.CSSProperties}><img src={drop.item.image} alt=""/><b>{drop.item.name}</b><em>{coins(drop.item.price)} SC</em></article>)}{balanceReward > 0 && <article className="magic-coins"><span>🐷</span><b>Магический баланс</b><em>+{coins(balanceReward)} SC</em></article>}</div>}</div>
+  return <div className={`magic-reveal ${phase}`} onAnimationEnd={(event) => { if (event.currentTarget === event.target && phase === 'spinning' && opening) onFinished() }}>
+    {phase !== 'result' && <><div className="magic-spark one">✦</div><div className="magic-spark two">✧</div><div className="magic-spark three">✦</div><img src={data.image} alt=""/><div className="magic-runes">✧ ✦ ✧</div>{phase === 'idle' && <b>СОСТАВ СКРЫТ<br/><small>1–3 предмета или свинокоинов</small></b>}{phase === 'spinning' && <b>МАГИЯ ВНУТРИ…<br/><small>СВИНОЗАКЛИНАНИЕ РАБОТАЕТ</small></b>}</>}
+    {phase === 'result' && <div className={`magic-rewards rewards-${Math.min(4, Math.max(1, rewardCount))}`}>{opening?.map((drop, index) => <article key={drop.inventoryId} style={{ '--delay': `${index * 160}ms` } as React.CSSProperties}><img src={drop.item.image} alt=""/><b>{drop.item.name}</b><em>{coins(drop.item.price)} SC</em></article>)}{balanceReward > 0 && <article className="magic-coins"><span>🐷</span><b>Магический баланс</b><em>+{coins(balanceReward)} SC</em></article>}</div>}
+  </div>
 }
 function CaseModal({ data, count, setCount, opening, balanceReward, phase, mode, setMode, onFinished, onClose, onOpen }: { data: Case; count: number; setCount: (n: number) => void; opening: Drop[] | null; balanceReward: number; phase: 'idle' | 'spinning' | 'result'; mode: SpinMode; setMode: (mode: SpinMode) => void; onFinished: () => void; onClose: () => void; onOpen: () => void }) {
   const pool = data.items.map((entry) => entry.item)
