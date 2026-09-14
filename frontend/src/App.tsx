@@ -255,7 +255,10 @@ function UpgradeDial({ chance, phase, result, mode, showPigOrbit }: { chance: nu
   // The arrow itself moves; the green success segment is fixed below.
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.landingAngle || 0
-  return <div className={`sd-upgrade ${phase} ${result ? 'ready' : ''} ${result?.success ? 'success' : 'failure'}`} style={{ '--success-size': `${safeChance * 3.6}deg`, '--needle-end': `${endAngle}deg`, '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
+  // Do not attach an outcome class while the arrow is moving: a green centre
+  // used to reveal a win before the animation had finished.
+  const outcomeClass = phase === 'result' ? (result?.success ? 'success' : 'failure') : ''
+  return <div className={`sd-upgrade ${phase} ${result ? 'ready' : ''} ${outcomeClass}`} style={{ '--success-size': `${safeChance * 3.6}deg`, '--needle-end': `${endAngle}deg`, '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
     <div className="sd-upgrade-disc"><div className="sd-ticks"/><div className="sd-core"><span className="sd-snout">🐽</span><small>{phase === 'spinning' ? 'СТРЕЛКА В ПОЛЁТЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>SVINO LUCK</em></div></div>
     {showPigOrbit && <div className="sd-pig-halo" aria-hidden="true"><div className="sd-pig-orbit"><i>🐷</i><i>🐽</i><i>🐷</i><i>🐽</i></div></div>}
     <div className="sd-needle"><i/></div>
