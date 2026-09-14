@@ -516,8 +516,17 @@ async function bootstrapAdmin() {
   if (!existing) {
     await prisma.user.create({ data: { username: 'PigAdmin', email, passwordHash: await bcrypt.hash(password, 12), role: 'ADMIN' } });
     console.log('Администратор создан из переменных окружения.');
-  } else if (existing.role !== 'ADMIN') {
-    await prisma.user.update({ where: { id: existing.id }, data: { role: 'ADMIN' } });
+  } else {
+    // The deployment secret is authoritative: this both keeps the role intact
+    // and lets the owner rotate the initial local password safely on deploy.
+    const passwordMatches = await bcrypt.compare(password, existing.passwordHash);
+    if (existing.role !== 'ADMIN' || !passwordMatches) {
+      await prisma.user.update({
+        where: { id: existing.id },
+        data: { role: 'ADMIN', ...(passwordMatches ? {} : { passwordHash: await bcrypt.hash(password, 12) }) },
+      });
+      console.log('Учётные данные администратора обновлены из переменных окружения.');
+    }
   }
 }
 bootstrapAdmin().then(async () => {
