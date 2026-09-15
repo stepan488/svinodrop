@@ -60,6 +60,79 @@ function pickWeighted<T extends { weight: number }>(list: T[]): T {
   for (const item of list) { cursor -= item.weight; if (cursor < 0) return item; }
   return list[list.length - 1];
 }
+type EconomyItem = { id: string; price: number };
+
+function expectedReturn(items: Array<{ weight: number; item: EconomyItem }>) {
+  const totalWeight = items.reduce((sum, entry) => sum + entry.weight, 0);
+  return totalWeight ? items.reduce((sum, entry) => sum + entry.item.price * entry.weight, 0) / totalWeight : 0;
+}
+
+// Rebuild a broken odds table around a predictable 76% theoretical return.
+// The target is clamped to the actual prize range, therefore each listed item
+// remains obtainable and no imaginary prize can ever be selected.
+function balancedWeights(items: EconomyItem[], casePrice: number) {
+  const min = Math.min(...items.map((item) => item.price));
+  const max = Math.max(...items.map((item) => item.price));
+  const target = Math.min(max, Math.max(min, Math.round(casePrice * 0.76)));
+  let low = -24; let high = 24;
+  for (let iteration = 0; iteration < 56; iteration += 1) {
+    const slope = (low + high) / 2;
+    const raw = items.map((item) => Math.exp(-slope * item.price / Math.max(1, casePrice)));
+    const average = raw.reduce((sum, weight, index) => sum + weight * items[index].price, 0) / raw.reduce((sum, weight) => sum + weight, 0);
+    if (average > target) low = slope; else high = slope;
+  }
+  const raw = items.map((item) => Math.exp(-high * item.price / Math.max(1, casePrice)));
+  const largest = Math.max(...raw);
+  return items.map((item, index) => ({ itemId: item.id, weight: Math.max(1, Math.round(raw[index] / largest * 10_000)) }));
+}
+
+function evenlySpaced<T>(list: T[], maximum: number) {
+  if (list.length <= maximum) return list;
+  return Array.from({ length: maximum }, (_, index) => list[Math.round(index * (list.length - 1) / (maximum - 1))]);
+}
+
+async function repairCaseEconomy() {
+  // "Дорфус" was created with a single record, which made the UI say that its
+  // contents were missing and guaranteed the same outcome. Fill only this
+  // damaged public case from the live catalogue; magic cases are never read or
+  // changed by this repair.
+  let repairedDorfus = false;
+  const dorfus = await prisma.case.findUnique({
+    where: { slug: 'ok-daa' },
+    include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } },
+  });
+  if (dorfus && dorfus.openingStyle === 'REEL' && dorfus.items.filter((entry) => entry.item.active).length < 6) {
+    const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+    const existing = new Set(dorfus.items.map((entry) => entry.itemId));
+    const nearby = catalogue.filter((item) => item.price >= Math.round(dorfus.price * 0.10) && item.price <= Math.round(dorfus.price * 3));
+    const additions = evenlySpaced((nearby.length >= 6 ? nearby : catalogue).filter((item) => !existing.has(item.id)), 9);
+    if (additions.length) {
+      await prisma.caseItem.createMany({ data: additions.map((item) => ({ caseId: dorfus.id, itemId: item.id, weight: 1 })), skipDuplicates: true });
+      repairedDorfus = true;
+    }
+  }
+
+  const cases = await prisma.case.findMany({
+    where: { active: true, openingStyle: 'REEL' },
+    include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } },
+  });
+  let corrected = 0;
+  for (const caseData of cases) {
+    const active = caseData.items.filter((entry) => entry.item.active);
+    if (active.length < 2) continue;
+    const ratio = expectedReturn(active) / Math.max(1, caseData.price);
+    // Keep hand-tuned, already sane cases intact. Only economically broken
+    // tables (or the repaired singleton) are normalised once at API boot.
+    if (!repairedDorfus && ratio >= 0.55 && ratio <= 0.92) continue;
+    const weights = balancedWeights(active.map((entry) => entry.item), caseData.price);
+    await prisma.$transaction(weights.map((entry) => prisma.caseItem.update({
+      where: { caseId_itemId: { caseId: caseData.id, itemId: entry.itemId } },
+      data: { weight: entry.weight },
+    })));
+    corrected += 1;
+  }
+  if (corrected) console.log(`Исправлены шансы в ${corrected} кейсах.`);
+}
 function upgradeLandingAngle(chance: number, success: boolean) {
   // The visible green sector is centred at 180°. The server chooses a random
   // point inside it for a win, or anywhere outside it for a loss, so the
@@ -174,7 +247,11 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, online: onlineSockets
 app.get('/api/cases', async (_req, res) => {
   const cases = await prisma.case.findMany({ where: { active: true }, include: { items: { include: { item: { select: itemSelect } }, orderBy: { weight: 'desc' } } }, orderBy: { price: 'asc' } });
   // Magical cases deliberately keep the possible prizes secret from players.
-  res.json(cases.map((entry) => entry.contentsHidden ? { ...entry, items: [] } : entry));
+  res.json(cases.map((entry) => {
+    if (entry.contentsHidden) return { ...entry, items: [] };
+    const totalWeight = entry.items.reduce((sum, item) => sum + item.weight, 0);
+    return { ...entry, items: entry.items.map((item) => ({ ...item, chance: totalWeight ? Math.round(item.weight / totalWeight * 10_000) / 100 : 0 })) };
+  }));
 });
 app.get('/api/site-settings', async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
 app.get('/api/items', async (_req, res) => res.json(await prisma.item.findMany({ where: { active: true }, select: itemSelect, orderBy: { price: 'asc' } })));
@@ -487,8 +564,8 @@ app.get('/api/battles', auth, async (req: AuthedRequest, res) => {
 });
 app.get('/api/battles/:id', auth, async (req: AuthedRequest, res) => { const battle = await battleView(req.params.id, req.session!.id); if (!battle || (battle.private && !battle.isMine && battle.creatorId !== req.session!.id)) return res.status(404).json({ error: 'Баттл не найден.' }); res.json(battle); });
 app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
-  const { caseIds, playerLimit = 2, mode = 'NORMAL', private: privateBattle = false } = req.body ?? {};
-  if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 12 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode)) return res.status(400).json({ error: 'Выбери от 1 до 12 кейсов, 2–4 игроков и режим.' });
+  const { caseIds, playerLimit = 2, mode = 'NORMAL', private: privateBattle = false, fast = false } = req.body ?? {};
+  if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 12 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode) || typeof fast !== 'boolean') return res.status(400).json({ error: 'Выбери от 1 до 12 кейсов, 2–4 игроков и режим.' });
   try {
     const created = await prisma.$transaction(async (tx) => {
       // Magic cases intentionally conceal their pool and can reveal several
@@ -500,7 +577,7 @@ app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
       if (user.balance < cost) throw new Error('Недостаточно свинокоинов для создания баттла.');
       await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'BATTLE_ENTRY', amount: -cost, description: 'Вход в кейс-баттл' } });
-      return tx.battle.create({ data: { creatorId: user.id, mode, playerLimit, private: Boolean(privateBattle), inviteCode: crypto.randomBytes(4).toString('hex').toUpperCase(), caseIds, players: { create: { userId: user.id } } } });
+      return tx.battle.create({ data: { creatorId: user.id, mode, playerLimit, private: Boolean(privateBattle), fast, inviteCode: crypto.randomBytes(4).toString('hex').toUpperCase(), caseIds, players: { create: { userId: user.id } } } });
     }, { isolationLevel: 'Serializable' });
     io.emit('battle:updated', { id: created.id }); res.status(201).json(await battleView(created.id, req.session!.id));
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать баттл.' }); }
@@ -670,6 +747,7 @@ app.post('/api/admin/giveaways', auth, admin, async (req: AuthedRequest, res) =>
     res.status(201).json(giveaway);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать розыгрыш.' }); }
 });
+app.get('/api/admin/items', auth, admin, async (_req, res) => res.json(await prisma.item.findMany({ select: itemSelect, orderBy: [{ active: 'desc' }, { price: 'asc' }] })));
 app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); try { const item = await prisma.$transaction(async (tx) => { const created = await tx.item.create({ data: { id, name, wear, price, image, rarity } }); const cases = await tx.case.findMany({ where: { active: true }, select: { id: true } }); await tx.caseItem.createMany({ data: cases.map((caseData) => ({ caseId: caseData.id, itemId: created.id, weight: Math.max(1, Math.round(100_000 / Math.max(1, created.price / 100))) })), skipDuplicates: true }); return created; }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE_AND_INJECT', metadata: { itemId: item.id } } }); res.status(201).json(item); } catch { res.status(409).json({ error: 'Предмет с таким ID уже существует.' }); } });
 app.get('/api/admin/site-settings', auth, admin, async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
 app.put('/api/admin/site-settings', auth, admin, async (req: AuthedRequest, res) => { const collectionTitle = String(req.body?.collectionTitle || '').trim(); if (!collectionTitle || collectionTitle.length > 64) return res.status(400).json({ error: 'Название должно быть от 1 до 64 символов.' }); await prisma.siteSetting.upsert({ where: { key: 'collectionTitle' }, create: { key: 'collectionTitle', value: collectionTitle }, update: { value: collectionTitle } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'COLLECTION_TITLE_UPDATE', metadata: { collectionTitle } } }); res.json({ collectionTitle }); });
@@ -696,7 +774,7 @@ app.post('/api/admin/cases', auth, admin, async (req: AuthedRequest, res) => {
   } catch { res.status(409).json({ error: 'Кейс с таким slug уже существует.' }); }
 });
 app.patch('/api/admin/cases/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, price, image, collection, active } = req.body ?? {}; const item = await prisma.case.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof collection === 'string' ? { collection } : {}), ...(typeof active === 'boolean' ? { active } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'CASE_UPDATE', metadata: { caseId: item.id } } }); res.json(item); });
-app.put('/api/admin/cases/:id/items', auth, admin, async (req: AuthedRequest, res) => { const items = req.body?.items; if (!Array.isArray(items) || !items.length || items.some((item) => typeof item?.itemId !== 'string' || !Number.isInteger(item?.weight) || item.weight < 1)) return res.status(400).json({ error: 'Добавьте хотя бы один предмет с весом от 1.' }); try { await prisma.$transaction(async (tx) => { const available = await tx.item.count({ where: { id: { in: items.map((item) => item.itemId) }, active: true } }); if (available !== items.length) throw new Error('В составе есть недоступный предмет.'); await tx.caseItem.deleteMany({ where: { caseId: req.params.id } }); await tx.caseItem.createMany({ data: items.map((item) => ({ caseId: req.params.id, itemId: item.itemId, weight: item.weight })) }); }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'CASE_WEIGHTS_UPDATE', metadata: { caseId: req.params.id } } }); res.json({ ok: true }); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось обновить состав.' }); } });
+app.put('/api/admin/cases/:id/items', auth, admin, async (req: AuthedRequest, res) => { const input = req.body?.items; if (!Array.isArray(input) || !input.length || input.some((item) => typeof item?.itemId !== 'string' || !Number.isInteger(item?.weight) || item.weight < 1)) return res.status(400).json({ error: 'Добавьте хотя бы один предмет с весом от 1.' }); const weights = new Map<string, number>(); input.forEach((item) => weights.set(item.itemId, item.weight)); const items = [...weights].map(([itemId, weight]) => ({ itemId, weight })); try { await prisma.$transaction(async (tx) => { const caseExists = await tx.case.findUnique({ where: { id: req.params.id }, select: { id: true } }); if (!caseExists) throw new Error('Кейс не найден.'); const available = await tx.item.count({ where: { id: { in: items.map((item) => item.itemId) }, active: true } }); if (available !== items.length) throw new Error('Один или несколько выбранных предметов выключены или не существуют. Включи их во вкладке «Предметы».'); await tx.caseItem.deleteMany({ where: { caseId: req.params.id } }); await tx.caseItem.createMany({ data: items.map((item) => ({ caseId: req.params.id, itemId: item.itemId, weight: item.weight })) }); }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'CASE_WEIGHTS_UPDATE', metadata: { caseId: req.params.id, itemCount: items.length } } }); res.json({ ok: true, itemCount: items.length }); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось обновить состав.' }); } });
 app.get('/api/admin/logs', auth, admin, async (_req, res) => res.json(await prisma.adminLog.findMany({ include: { admin: { select: { email: true, username: true } } }, orderBy: { createdAt: 'desc' }, take: 250 })));
 app.get('/api/admin/chat', auth, admin, async (_req, res) => res.json(await prisma.chatMessage.findMany({ include: { user: { select: { username: true, email: true } } }, orderBy: { createdAt: 'desc' }, take: 200 })));
 app.delete('/api/admin/chat/:id', auth, admin, async (req: AuthedRequest, res) => {
@@ -736,5 +814,6 @@ async function bootstrapAdmin() {
   }
 }
 bootstrapAdmin().then(async () => {
+  await repairCaseEconomy();
   server.listen(PORT, () => console.log(`SvinoDrop API: http://localhost:${PORT}`));
 }).catch((error) => { console.error('Не удалось инициализировать сервер', error); process.exit(1); });

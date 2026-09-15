@@ -219,6 +219,7 @@ model Battle {
   mode String @default("NORMAL")
   playerLimit Int @default(2)
   private Boolean @default(false)
+  fast Boolean @default(false)
   inviteCode String @unique
   caseIds Json
   results Json?
