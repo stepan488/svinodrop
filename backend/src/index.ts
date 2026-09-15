@@ -95,14 +95,21 @@ const collectionOdds = {
 } as const;
 
 async function rebalanceCollectionOdds() {
-  const version = 'collection-odds-v1';
+  const version = 'collection-odds-v2';
   const marker = await prisma.siteSetting.findUnique({ where: { key: 'drop-economy-version' } });
   if (marker?.value === version) return;
   const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
   const cases = await prisma.case.findMany({ where: { active: true, collection: { in: Object.keys(collectionOdds) } }, include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } } });
   for (const caseData of cases) {
     const rules = collectionOdds[caseData.collection as keyof typeof collectionOdds];
-    const current = caseData.items.filter((entry) => entry.item.active).map((entry) => ({ id: entry.item.id, price: entry.item.price }));
+    const eligible = caseData.items.filter((entry) => entry.item.active);
+    const badLow = eligible.filter((entry) => entry.item.price < caseData.price * rules.min);
+    // A collection may reach its declared loss boundary, but never go below
+    // it. Remove only objectively out-of-range legacy filler, leaving at
+    // least two prizes in every case.
+    const removeBadLow = badLow.length > 0 && eligible.length - badLow.length >= 2;
+    if (removeBadLow) await prisma.caseItem.deleteMany({ where: { id: { in: badLow.map((entry) => entry.id) } } });
+    const current = (removeBadLow ? eligible.filter((entry) => !badLow.includes(entry)) : eligible).map((entry) => ({ id: entry.item.id, price: entry.item.price }));
     if (!current.length) continue;
     const known = new Set(current.map((item) => item.id));
     const minPrice = Math.min(...current.map((item) => item.price)); const maxPrice = Math.max(...current.map((item) => item.price));
@@ -121,6 +128,42 @@ async function rebalanceCollectionOdds() {
     await prisma.$transaction(weights.map((entry) => prisma.caseItem.update({ where: { caseId_itemId: { caseId: caseData.id, itemId: entry.itemId } }, data: { weight: entry.weight } })));
   }
   await prisma.siteSetting.upsert({ where: { key: 'drop-economy-version' }, create: { key: 'drop-economy-version', value: version }, update: { value: version } });
+}
+
+const newMagicCases = [
+  { name: 'Куратор Волшебников', slug: 'wizard-curator-pig', price: 3_349_900, image: 'https://i.ibb.co/0PtLL8w/a27df65b-967c-4fd0-9f0f-8581284f33e2.png' },
+  { name: 'Повелитель Волшебников', slug: 'wizard-lord-pig', price: 5_299_900, image: 'https://i.ibb.co/99qxSDbT/03b8e81e-a586-4f1b-9260-372adc6002f2.png' },
+  { name: 'Бог Волшебник', slug: 'wizard-god-pig', price: 8_999_900, image: 'https://i.ibb.co/Hf48Y231/46b36004-b582-429f-8fc1-de09453dd42c.png' },
+  { name: 'Вселенный Волшебник', slug: 'wizard-universe-pig', price: 12_999_900, image: 'https://i.ibb.co/LDPYswQh/1765af5e-949d-47ba-89fd-cb93819fc1c3.png' },
+] as const;
+
+async function ensureNewMagicCases() {
+  const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+  for (const config of newMagicCases) {
+    const existing = await prisma.case.findUnique({ where: { slug: config.slug }, include: { items: true } });
+    if (existing) continue;
+    const candidates = catalogue.filter((item) => item.price >= config.price * 0.20 && item.price <= config.price * 10);
+    const pool = evenlySpaced(candidates.length >= 6 ? candidates : catalogue, 10);
+    if (!pool.length) continue;
+    const created = await prisma.case.create({ data: { ...config, collection: 'Магические Свиньи', openingStyle: 'MAGIC', maxOpen: 1, contentsHidden: true } });
+    const weights = balancedWeights(pool, config.price, collectionOdds['Магические Свиньи'].target);
+    await prisma.caseItem.createMany({ data: weights.map((entry) => ({ caseId: created.id, itemId: entry.itemId, weight: entry.weight })) });
+  }
+}
+
+async function ensureTitanPapaChance() {
+  const [papa, titan] = await Promise.all([
+    prisma.case.findUnique({ where: { slug: 'papa-pig' }, include: { items: true } }),
+    prisma.item.findFirst({ where: { OR: [{ id: '32' }, { name: { contains: 'Titan (Holo)', mode: 'insensitive' } }] }, select: { id: true } }),
+  ]);
+  if (!papa || !titan) return;
+  await prisma.caseItem.upsert({ where: { caseId_itemId: { caseId: papa.id, itemId: titan.id } }, create: { caseId: papa.id, itemId: titan.id, weight: 1 }, update: { weight: 1 } });
+  const regular = papa.items.filter((entry) => entry.itemId !== titan.id);
+  const total = regular.reduce((sum, entry) => sum + entry.weight, 0) || regular.length;
+  const normalized = regular.map((entry) => ({ id: entry.id, weight: Math.max(1, Math.round((entry.weight || 1) / total * 99_999)) }));
+  const difference = 99_999 - normalized.reduce((sum, entry) => sum + entry.weight, 0);
+  if (normalized.length) normalized[0].weight = Math.max(1, normalized[0].weight + difference);
+  await prisma.$transaction(normalized.map((entry) => prisma.caseItem.update({ where: { id: entry.id }, data: { weight: entry.weight } })));
 }
 
 function evenlySpaced<T>(list: T[], maximum: number) {
@@ -319,7 +362,9 @@ app.get('/api/leaderboard', async (_req, res) => {
       inventory: { where: { removedAt: null, revealed: true }, select: { item: { select: { price: true } } } },
     },
   });
+  const automatedName = /^(casecheck_|stepanobot$|wheel\d|realbattle|battle[ab]\d|fleettest|spin\d|verify|checkpig|pigadmin$)/i;
   const board = users
+    .filter((user) => !automatedName.test(user.username) || /^(bigpig|doorfrus|doofrus)$/i.test(user.username))
     .map((user) => {
       const inventoryValue = user.inventory.reduce((sum, entry) => sum + entry.item.price, 0);
       return { id: user.id, username: user.username, avatar: user.avatar, balance: user.balance, inventoryValue, skins: user.inventory.length, total: user.balance + inventoryValue };
@@ -443,6 +488,12 @@ app.patch('/api/profile/customize', auth, async (req: AuthedRequest, res) => {
   if (!profileAvatars.includes(avatar) || typeof nickColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(nickColor)) return res.status(400).json({ error: 'Выбери аватар и корректный цвет ника.' });
   const user = await prisma.user.update({ where: { id: req.session!.id }, data: { avatar, nickColor: nickColor.toLowerCase() } });
   res.json({ user: publicUser(user) });
+});
+app.delete('/api/profile', auth, async (req: AuthedRequest, res) => {
+  try {
+    await prisma.user.delete({ where: { id: req.session!.id } });
+    res.json({ ok: true });
+  } catch { res.status(400).json({ error: 'Не удалось удалить аккаунт: заверши активные игры и попробуй снова.' }); }
 });
 app.get('/api/users/:id', async (req, res) => {
   const user = await prisma.user.findFirst({ where: { id: req.params.id, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true, createdAt: true, _count: { select: { drops: true, upgrades: true, inventory: { where: { removedAt: null, revealed: true } } } } } });
@@ -883,6 +934,8 @@ async function bootstrapAdmin() {
 }
 bootstrapAdmin().then(async () => {
   await repairCaseEconomy();
+  await ensureNewMagicCases();
   await rebalanceCollectionOdds();
+  await ensureTitanPapaChance();
   server.listen(PORT, () => console.log(`SvinoDrop API: http://localhost:${PORT}`));
 }).catch((error) => { console.error('Не удалось инициализировать сервер', error); process.exit(1); });
