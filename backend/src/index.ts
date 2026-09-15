@@ -70,10 +70,10 @@ function expectedReturn(items: Array<{ weight: number; item: EconomyItem }>) {
 // Rebuild a broken odds table around a predictable 76% theoretical return.
 // The target is clamped to the actual prize range, therefore each listed item
 // remains obtainable and no imaginary prize can ever be selected.
-function balancedWeights(items: EconomyItem[], casePrice: number) {
+function balancedWeights(items: EconomyItem[], casePrice: number, targetRatio = 0.76) {
   const min = Math.min(...items.map((item) => item.price));
   const max = Math.max(...items.map((item) => item.price));
-  const target = Math.min(max, Math.max(min, Math.round(casePrice * 0.76)));
+  const target = Math.min(max, Math.max(min, Math.round(casePrice * targetRatio)));
   let low = -24; let high = 24;
   for (let iteration = 0; iteration < 56; iteration += 1) {
     const slope = (low + high) / 2;
@@ -84,6 +84,43 @@ function balancedWeights(items: EconomyItem[], casePrice: number) {
   const raw = items.map((item) => Math.exp(-high * item.price / Math.max(1, casePrice)));
   const largest = Math.max(...raw);
   return items.map((item, index) => ({ itemId: item.id, weight: Math.max(1, Math.round(raw[index] / largest * 10_000)) }));
+}
+
+const collectionOdds = {
+  'Свиноохотники': { min: 0.10, max: 10, target: 0.78 },
+  'Магические Свиньи': { min: 0.20, max: 10, target: 0.52 },
+  'От рубля до ножа': { min: 1 / 15, max: 15, target: 0.76 },
+  'Свинячий Окуп': { min: 1 / 15, max: 30, target: 0.82 },
+  'Свинки Пепы': { min: 1 / 3, max: 3, target: 0.78 },
+} as const;
+
+async function rebalanceCollectionOdds() {
+  const version = 'collection-odds-v1';
+  const marker = await prisma.siteSetting.findUnique({ where: { key: 'drop-economy-version' } });
+  if (marker?.value === version) return;
+  const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+  const cases = await prisma.case.findMany({ where: { active: true, collection: { in: Object.keys(collectionOdds) } }, include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } } });
+  for (const caseData of cases) {
+    const rules = collectionOdds[caseData.collection as keyof typeof collectionOdds];
+    const current = caseData.items.filter((entry) => entry.item.active).map((entry) => ({ id: entry.item.id, price: entry.item.price }));
+    if (!current.length) continue;
+    const known = new Set(current.map((item) => item.id));
+    const minPrice = Math.min(...current.map((item) => item.price)); const maxPrice = Math.max(...current.map((item) => item.price));
+    const additions: EconomyItem[] = [];
+    if (minPrice > caseData.price * rules.min) {
+      const low = catalogue.filter((item) => !known.has(item.id) && item.price <= Math.round(caseData.price * rules.min * 1.15)).at(-1);
+      if (low) { additions.push(low); known.add(low.id); }
+    }
+    if (maxPrice < caseData.price * rules.max) {
+      const high = catalogue.find((item) => !known.has(item.id) && item.price >= Math.round(caseData.price * rules.max * 0.85));
+      if (high) additions.push(high);
+    }
+    const pool = [...current, ...additions];
+    if (additions.length) await prisma.caseItem.createMany({ data: additions.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: 1 })), skipDuplicates: true });
+    const weights = balancedWeights(pool, caseData.price, rules.target);
+    await prisma.$transaction(weights.map((entry) => prisma.caseItem.update({ where: { caseId_itemId: { caseId: caseData.id, itemId: entry.itemId } }, data: { weight: entry.weight } })));
+  }
+  await prisma.siteSetting.upsert({ where: { key: 'drop-economy-version' }, create: { key: 'drop-economy-version', value: version }, update: { value: version } });
 }
 
 function evenlySpaced<T>(list: T[], maximum: number) {
@@ -805,7 +842,7 @@ app.post('/api/admin/cases', auth, admin, async (req: AuthedRequest, res) => {
   } catch { res.status(409).json({ error: 'Кейс с таким slug уже существует.' }); }
 });
 app.patch('/api/admin/cases/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, price, image, collection, active } = req.body ?? {}; const item = await prisma.case.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof collection === 'string' ? { collection } : {}), ...(typeof active === 'boolean' ? { active } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'CASE_UPDATE', metadata: { caseId: item.id } } }); res.json(item); });
-app.put('/api/admin/cases/:id/items', auth, admin, async (req: AuthedRequest, res) => { const input = req.body?.items; if (!Array.isArray(input) || !input.length || input.some((item) => typeof item?.itemId !== 'string' || !Number.isInteger(item?.weight) || item.weight < 1)) return res.status(400).json({ error: 'Добавьте хотя бы один предмет с весом от 1.' }); const weights = new Map<string, number>(); input.forEach((item) => weights.set(item.itemId, item.weight)); const items = [...weights].map(([itemId, weight]) => ({ itemId, weight })); try { await prisma.$transaction(async (tx) => { const caseExists = await tx.case.findUnique({ where: { id: req.params.id }, select: { id: true } }); if (!caseExists) throw new Error('Кейс не найден.'); const available = await tx.item.count({ where: { id: { in: items.map((item) => item.itemId) }, active: true } }); if (available !== items.length) throw new Error('Один или несколько выбранных предметов выключены или не существуют. Включи их во вкладке «Предметы».'); await tx.caseItem.deleteMany({ where: { caseId: req.params.id } }); await tx.caseItem.createMany({ data: items.map((item) => ({ caseId: req.params.id, itemId: item.itemId, weight: item.weight })) }); }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'CASE_WEIGHTS_UPDATE', metadata: { caseId: req.params.id, itemCount: items.length } } }); res.json({ ok: true, itemCount: items.length }); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось обновить состав.' }); } });
+app.put('/api/admin/cases/:id/items', auth, admin, async (req: AuthedRequest, res) => { const input = req.body?.items; if (!Array.isArray(input) || !input.length || input.some((item) => typeof item?.itemId !== 'string' || !Number.isInteger(item?.weight) || item.weight < 1)) return res.status(400).json({ error: 'Добавьте хотя бы один предмет с весом от 1.' }); const weights = new Map<string, number>(); input.forEach((item) => weights.set(item.itemId, item.weight)); const items = [...weights].map(([itemId, weight]) => ({ itemId, weight })); try { await prisma.$transaction(async (tx) => { const caseExists = await tx.case.findUnique({ where: { id: req.params.id }, select: { id: true } }); if (!caseExists) throw new Error('Кейс не найден.'); const available = await tx.item.count({ where: { id: { in: items.map((item) => item.itemId) } } }); if (available !== items.length) throw new Error('Один или несколько выбранных предметов не существуют.'); await tx.item.updateMany({ where: { id: { in: items.map((item) => item.itemId) }, active: false }, data: { active: true } }); await tx.caseItem.deleteMany({ where: { caseId: req.params.id } }); await tx.caseItem.createMany({ data: items.map((item) => ({ caseId: req.params.id, itemId: item.itemId, weight: item.weight })) }); }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'CASE_WEIGHTS_UPDATE', metadata: { caseId: req.params.id, itemCount: items.length } } }); res.json({ ok: true, itemCount: items.length }); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось обновить состав.' }); } });
 app.get('/api/admin/logs', auth, admin, async (_req, res) => res.json(await prisma.adminLog.findMany({ include: { admin: { select: { email: true, username: true } } }, orderBy: { createdAt: 'desc' }, take: 250 })));
 app.get('/api/admin/chat', auth, admin, async (_req, res) => res.json(await prisma.chatMessage.findMany({ include: { user: { select: { username: true, email: true } } }, orderBy: { createdAt: 'desc' }, take: 200 })));
 app.delete('/api/admin/chat/:id', auth, admin, async (req: AuthedRequest, res) => {
@@ -846,5 +883,6 @@ async function bootstrapAdmin() {
 }
 bootstrapAdmin().then(async () => {
   await repairCaseEconomy();
+  await rebalanceCollectionOdds();
   server.listen(PORT, () => console.log(`SvinoDrop API: http://localhost:${PORT}`));
 }).catch((error) => { console.error('Не удалось инициализировать сервер', error); process.exit(1); });
