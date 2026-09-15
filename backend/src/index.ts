@@ -431,12 +431,15 @@ async function battleView(id: string, userId?: string) {
   const foundCases = await prisma.case.findMany({
     where: { id: { in: caseIds } },
     select: {
-      id: true, name: true, image: true, price: true,
+      id: true, name: true, image: true, price: true, openingStyle: true,
       // The battle client needs the public case pool to render the same real
       // reel that players see in a regular case opening.
       items: { where: { item: { active: true } }, select: { id: true, weight: true, item: { select: itemSelect } } },
     },
   });
+  // Legacy rooms with a secret-pool case are hidden too: a magic case must
+  // never expose its contents through a battle replay.
+  if (foundCases.some((item) => item.openingStyle === 'MAGIC')) return null;
   const cases = caseIds.map((caseId) => foundCases.find((item) => item.id === caseId)).filter(Boolean);
   return { ...battle, caseIds, cases, players: battle.players.map(publicPlayer), isMine: battle.players.some((player) => player.userId === userId) };
 }
@@ -446,7 +449,7 @@ async function settleBattle(id: string) {
     if (!battle || battle.status !== 'WAITING' || battle.players.length < battle.playerLimit) return null;
     const locked = await tx.battle.updateMany({ where: { id, status: 'WAITING' }, data: { status: 'RUNNING' } });
     if (!locked.count) return null;
-    const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] }, active: true }, include: { items: { include: { item: { select: itemSelect } } } } });
+    const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] }, active: true, openingStyle: { not: 'MAGIC' } }, include: { items: { include: { item: { select: itemSelect } } } } });
     if (cases.length !== new Set(battle.caseIds as string[]).size) throw new Error('Один из кейсов баттла недоступен.');
     const rounds = battle.players.map((player) => {
       const drops = (battle.caseIds as string[]).map((caseId) => {
@@ -488,8 +491,10 @@ app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
   if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 12 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode)) return res.status(400).json({ error: 'Выбери от 1 до 12 кейсов, 2–4 игроков и режим.' });
   try {
     const created = await prisma.$transaction(async (tx) => {
-      const cases = await tx.case.findMany({ where: { id: { in: caseIds }, active: true }, select: { id: true, price: true } });
-      if (cases.length !== new Set(caseIds).size) throw new Error('Выбран недоступный кейс.');
+      // Magic cases intentionally conceal their pool and can reveal several
+      // rewards, so they are a solo-only mode and must never enter a battle.
+      const cases = await tx.case.findMany({ where: { id: { in: caseIds }, active: true, openingStyle: { not: 'MAGIC' } }, select: { id: true, price: true } });
+      if (cases.length !== new Set(caseIds).size) throw new Error('Магические и недоступные кейсы нельзя добавлять в баттл.');
       const cost = caseIds.reduce((sum, caseId) => sum + (cases.find((item) => item.id === caseId)?.price || 0), 0);
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       if (user.balance < cost) throw new Error('Недостаточно свинокоинов для создания баттла.');
