@@ -51,8 +51,8 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   if (current.count > 90) return res.status(429).json({ error: 'Слишком много запросов. Попробуйте через минуту.' });
   next();
 }
-function publicUser(user: { id: string; username: string; email: string; avatar: string | null; balance: number; role: string; createdAt: Date }) {
-  return { id: user.id, username: user.username, email: user.email, avatar: user.avatar, balance: user.balance, role: user.role, createdAt: user.createdAt };
+function publicUser(user: { id: string; username: string; email: string; avatar: string | null; nickColor: string; balance: number; role: string; createdAt: Date }) {
+  return { id: user.id, username: user.username, email: user.email, avatar: user.avatar, nickColor: user.nickColor, balance: user.balance, role: user.role, createdAt: user.createdAt };
 }
 function pickWeighted<T extends { weight: number }>(list: T[]): T {
   const sum = list.reduce((n, item) => n + item.weight, 0);
@@ -399,6 +399,18 @@ app.get('/api/profile', auth, async (req: AuthedRequest, res) => {
     prisma.transaction.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 10 })
   ]);
   res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, daily: dailyStatus(user.dailyCaseClaimedAt) });
+});
+const profileAvatars = ['🐷', '🐽', '👑', '🎰', '⚔️', '🦄', '🐸', '🦊', '🐯', '🦈', '👾', '🤖'];
+app.patch('/api/profile/customize', auth, async (req: AuthedRequest, res) => {
+  const { avatar, nickColor } = req.body ?? {};
+  if (!profileAvatars.includes(avatar) || typeof nickColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(nickColor)) return res.status(400).json({ error: 'Выбери аватар и корректный цвет ника.' });
+  const user = await prisma.user.update({ where: { id: req.session!.id }, data: { avatar, nickColor: nickColor.toLowerCase() } });
+  res.json({ user: publicUser(user) });
+});
+app.get('/api/users/:id', async (req, res) => {
+  const user = await prisma.user.findFirst({ where: { id: req.params.id, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true, createdAt: true, _count: { select: { drops: true, upgrades: true, inventory: { where: { removedAt: null, revealed: true } } } } } });
+  if (!user) return res.status(404).json({ error: 'Профиль не найден.' });
+  res.json({ id: user.id, username: user.username, avatar: user.avatar, nickColor: user.nickColor, createdAt: user.createdAt, stats: { opens: user._count.drops, upgrades: user._count.upgrades, itemCount: user._count.inventory } });
 });
 
 app.get('/api/daily-case', auth, async (req: AuthedRequest, res) => {
