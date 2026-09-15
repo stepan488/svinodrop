@@ -32,6 +32,10 @@ model User {
   wheelBets WheelBet[]
   giveawayEntries GiveawayEntry[]
   wonGiveaways Giveaway[] @relation("GiveawayWinner")
+  battlesCreated Battle[] @relation("BattleCreator")
+  battlePlayers BattlePlayer[]
+  navalGamesCreated NavalGame[] @relation("NavalCreator")
+  navalPlayers NavalPlayer[]
 }
 
 model Item {
@@ -234,4 +238,65 @@ model GiveawayEntry {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@unique([giveawayId, userId])
   @@index([giveawayId, createdAt])
+}
+
+model Battle {
+  id String @id @default(uuid())
+  creatorId String
+  status String @default("WAITING")
+  mode String @default("NORMAL")
+  playerLimit Int @default(2)
+  private Boolean @default(false)
+  inviteCode String @unique
+  caseIds Json
+  results Json?
+  winnerUserId String?
+  createdAt DateTime @default(now())
+  settledAt DateTime?
+  creator User @relation("BattleCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  players BattlePlayer[]
+  @@index([status, private, createdAt])
+}
+
+model BattlePlayer {
+  id String @id @default(uuid())
+  battleId String
+  userId String?
+  botName String?
+  joinedAt DateTime @default(now())
+  battle Battle @relation(fields: [battleId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([battleId, userId])
+}
+
+model NavalGame {
+  id String @id @default(uuid())
+  creatorId String
+  stake Int
+  status String @default("WAITING")
+  turnUserId String?
+  winnerUserId String?
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+  creator User @relation("NavalCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  players NavalPlayer[]
+  @@index([status, createdAt])
+}
+
+model NavalPlayer {
+  id String @id @default(uuid())
+  gameId String
+  userId String
+  ships Json?
+  shots Json @default("[]")
+  ready Boolean @default(false)
+  game NavalGame @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([gameId, userId])
+}
+
+model SiteSetting {
+  key String @id
+  value String
+  updatedAt DateTime @updatedAt
 }

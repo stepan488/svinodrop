@@ -176,6 +176,7 @@ app.get('/api/cases', async (_req, res) => {
   // Magical cases deliberately keep the possible prizes secret from players.
   res.json(cases.map((entry) => entry.contentsHidden ? { ...entry, items: [] } : entry));
 });
+app.get('/api/site-settings', async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
 app.get('/api/items', async (_req, res) => res.json(await prisma.item.findMany({ where: { active: true }, select: itemSelect, orderBy: { price: 'asc' } })));
 app.get('/api/leaderboard', async (_req, res) => {
   const users = await prisma.user.findMany({
@@ -419,6 +420,114 @@ app.post('/api/upgrades/:id/reveal', auth, async (req: AuthedRequest, res) => {
   }
   res.json({ ok: true });
 });
+
+type BattleMode = 'NORMAL' | 'CURSED' | 'JACKPOT' | 'LAST';
+const battleModes = new Set<BattleMode>(['NORMAL', 'CURSED', 'JACKPOT', 'LAST']);
+const publicPlayer = (player: { id: string; userId: string | null; botName: string | null; user?: { username: string; avatar: string | null } | null }) => ({ id: player.id, userId: player.userId, username: player.user?.username || player.botName || 'Бот-свин', avatar: player.user?.avatar || '🤖' });
+async function battleView(id: string, userId?: string) {
+  const battle = await prisma.battle.findUnique({ where: { id }, include: { players: { include: { user: { select: { username: true, avatar: true } } }, orderBy: { joinedAt: 'asc' } } } });
+  if (!battle) return null;
+  const cases = await prisma.case.findMany({ where: { id: { in: battle.caseIds as string[] } }, select: { id: true, name: true, image: true, price: true } });
+  return { ...battle, caseIds: battle.caseIds as string[], cases, players: battle.players.map(publicPlayer), isMine: battle.players.some((player) => player.userId === userId) };
+}
+async function settleBattle(id: string) {
+  const settled = await prisma.$transaction(async (tx) => {
+    const battle = await tx.battle.findUnique({ where: { id }, include: { players: { include: { user: { select: { username: true, avatar: true } } }, orderBy: { joinedAt: 'asc' } } } });
+    if (!battle || battle.status !== 'WAITING' || battle.players.length < battle.playerLimit) return null;
+    const locked = await tx.battle.updateMany({ where: { id, status: 'WAITING' }, data: { status: 'RUNNING' } });
+    if (!locked.count) return null;
+    const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] }, active: true }, include: { items: { include: { item: { select: itemSelect } } } } });
+    if (cases.length !== (battle.caseIds as string[]).length) throw new Error('Один из кейсов баттла недоступен.');
+    const rounds = battle.players.map((player) => {
+      const drops = (battle.caseIds as string[]).map((caseId) => {
+        const source = cases.find((item) => item.id === caseId)!;
+        const eligible = source.items.filter((entry) => entry.item.active);
+        if (!eligible.length) throw new Error(`В кейсе «${source.name}» нет предметов.`);
+        const win = pickWeighted(eligible).item;
+        return { caseId, caseName: source.name, item: win, value: win.price };
+      });
+      return { player: publicPlayer(player), drops, total: drops.reduce((sum, drop) => sum + drop.value, 0) };
+    });
+    let winnerIndex = 0;
+    if (battle.mode === 'CURSED') winnerIndex = rounds.reduce((best, row, index) => row.total < rounds[best].total ? index : best, 0);
+    else if (battle.mode === 'LAST') winnerIndex = rounds.reduce((best, row, index) => row.drops.at(-1)!.value > rounds[best].drops.at(-1)!.value ? index : best, 0);
+    else if (battle.mode === 'JACKPOT') {
+      const total = rounds.reduce((sum, row) => sum + row.total, 0) || rounds.length;
+      let point = crypto.randomInt(total);
+      for (let index = 0; index < rounds.length; index += 1) { point -= rounds[index].total || 1; if (point < 0) { winnerIndex = index; break; } }
+    } else winnerIndex = rounds.reduce((best, row, index) => row.total > rounds[best].total ? index : best, 0);
+    const winner = battle.players[winnerIndex];
+    const allDrops = rounds.flatMap((round) => round.drops);
+    if (winner.userId) {
+      await tx.inventory.createMany({ data: allDrops.map((drop) => ({ userId: winner.userId!, itemId: drop.item.id, obtainedFrom: `battle:${battle.id}`, revealed: true })) });
+      await tx.transaction.create({ data: { userId: winner.userId, type: 'BATTLE_WIN', amount: 0, description: `Победа в кейс-баттле · ${allDrops.length} предметов` } });
+    }
+    await tx.battle.update({ where: { id: battle.id }, data: { status: 'FINISHED', winnerUserId: winner.userId, results: { rounds, winnerIndex }, settledAt: new Date() } });
+    return { id: battle.id, winner: publicPlayer(winner), rounds, mode: battle.mode };
+  }, { isolationLevel: 'Serializable' });
+  if (settled) io.emit('battle:updated', { id: settled.id });
+  return settled;
+}
+app.get('/api/battles', auth, async (req: AuthedRequest, res) => {
+  const battles = await prisma.battle.findMany({ where: { OR: [{ private: false }, { creatorId: req.session!.id }, { players: { some: { userId: req.session!.id } } }] }, orderBy: { createdAt: 'desc' }, take: 30, select: { id: true } });
+  res.json((await Promise.all(battles.map((battle) => battleView(battle.id, req.session!.id)))).filter(Boolean));
+});
+app.get('/api/battles/:id', auth, async (req: AuthedRequest, res) => { const battle = await battleView(req.params.id, req.session!.id); if (!battle || (battle.private && !battle.isMine && battle.creatorId !== req.session!.id)) return res.status(404).json({ error: 'Баттл не найден.' }); res.json(battle); });
+app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
+  const { caseIds, playerLimit = 2, mode = 'NORMAL', private: privateBattle = false } = req.body ?? {};
+  if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 12 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode)) return res.status(400).json({ error: 'Выбери от 1 до 12 кейсов, 2–4 игроков и режим.' });
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const cases = await tx.case.findMany({ where: { id: { in: caseIds }, active: true }, select: { id: true, price: true } });
+      if (cases.length !== caseIds.length) throw new Error('Выбран недоступный кейс.');
+      const cost = cases.reduce((sum, item) => sum + item.price, 0);
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      if (user.balance < cost) throw new Error('Недостаточно свинокоинов для создания баттла.');
+      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } });
+      await tx.transaction.create({ data: { userId: user.id, type: 'BATTLE_ENTRY', amount: -cost, description: 'Вход в кейс-баттл' } });
+      return tx.battle.create({ data: { creatorId: user.id, mode, playerLimit, private: Boolean(privateBattle), inviteCode: crypto.randomBytes(4).toString('hex').toUpperCase(), caseIds, players: { create: { userId: user.id } } } });
+    }, { isolationLevel: 'Serializable' });
+    io.emit('battle:updated', { id: created.id }); res.status(201).json(await battleView(created.id, req.session!.id));
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать баттл.' }); }
+});
+app.post('/api/battles/:id/join', auth, async (req: AuthedRequest, res) => {
+  try {
+    const joined = await prisma.$transaction(async (tx) => {
+      const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } });
+      if (!battle || battle.status !== 'WAITING') throw new Error('В этот баттл уже нельзя войти.');
+      if (battle.players.some((player) => player.userId === req.session!.id)) throw new Error('Ты уже в этом баттле.');
+      if (battle.players.length >= battle.playerLimit) throw new Error('Все места уже заняты.');
+      const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] }, active: true }, select: { price: true } }); const cost = cases.reduce((sum, item) => sum + item.price, 0);
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < cost) throw new Error('Недостаточно свинокоинов для входа.');
+      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: cost } } }); await tx.transaction.create({ data: { userId: user.id, type: 'BATTLE_ENTRY', amount: -cost, description: 'Вход в кейс-баттл' } });
+      await tx.battlePlayer.create({ data: { battleId: battle.id, userId: user.id } }); return battle.players.length + 1 >= battle.playerLimit;
+    }, { isolationLevel: 'Serializable' });
+    if (joined) await settleBattle(req.params.id); io.emit('battle:updated', { id: req.params.id }); res.json(await battleView(req.params.id, req.session!.id));
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в баттл.' }); }
+});
+app.post('/api/battles/:id/bot', auth, async (req: AuthedRequest, res) => {
+  try { await prisma.$transaction(async (tx) => { const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!battle || battle.creatorId !== req.session!.id || battle.status !== 'WAITING') throw new Error('Добавить бота нельзя.'); if (battle.players.length >= battle.playerLimit) throw new Error('Нет свободного места.'); await tx.battlePlayer.create({ data: { battleId: battle.id, botName: `Свинобот #${crypto.randomInt(100, 999)}` } }); }); await settleBattle(req.params.id); res.json(await battleView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось добавить бота.' }); }
+});
+
+type Cell = { x: number; y: number };
+function validFleet(cells: unknown): cells is Cell[] {
+  if (!Array.isArray(cells) || cells.length !== 17) return false;
+  const result = cells as Cell[]; if (result.some((cell) => !Number.isInteger(cell?.x) || !Number.isInteger(cell?.y) || cell.x < 0 || cell.x > 9 || cell.y < 0 || cell.y > 9) || new Set(result.map((cell) => `${cell.x}:${cell.y}`)).size !== 17) return false;
+  const remaining = new Set(result.map((cell) => `${cell.x}:${cell.y}`)); const sizes: number[] = [];
+  while (remaining.size) { const first = remaining.values().next().value as string; const stack = [first]; remaining.delete(first); const group: Cell[] = []; while (stack.length) { const key = stack.pop()!; const [x, y] = key.split(':').map(Number); group.push({ x, y }); for (const neighbour of [`${x + 1}:${y}`, `${x - 1}:${y}`, `${x}:${y + 1}`, `${x}:${y - 1}`]) if (remaining.delete(neighbour)) stack.push(neighbour); } const sameX = group.every((cell) => cell.x === group[0].x); const sameY = group.every((cell) => cell.y === group[0].y); if ((!sameX && !sameY) || group.length > 5) return false; sizes.push(group.length); }
+  return sizes.sort((a, b) => a - b).join(',') === '2,3,3,4,5';
+}
+async function navalView(id: string, userId: string) {
+  const game = await prisma.navalGame.findUnique({ where: { id }, include: { players: { include: { user: { select: { username: true, avatar: true } } } } } }); if (!game) return null;
+  const mine = game.players.find((player) => player.userId === userId); if (!mine) return null; const opponent = game.players.find((player) => player.userId !== userId);
+  return { id: game.id, stake: game.stake, status: game.status, turnUserId: game.turnUserId, winnerUserId: game.winnerUserId, mine: { ready: mine.ready, ships: mine.ships || [], shots: mine.shots }, opponent: opponent ? { username: opponent.user.username, avatar: opponent.user.avatar, ready: opponent.ready, shots: opponent.shots } : null };
+}
+app.get('/api/naval/games', auth, async (_req, res) => res.json(await prisma.navalGame.findMany({ where: { status: { in: ['WAITING', 'SETUP', 'PLAYING'] } }, include: { players: { include: { user: { select: { username: true } } } } }, orderBy: { createdAt: 'desc' }, take: 20 })));
+app.get('/api/naval/:id', auth, async (req: AuthedRequest, res) => { const game = await navalView(req.params.id, req.session!.id); if (!game) return res.status(404).json({ error: 'Игра не найдена.' }); res.json(game); });
+app.post('/api/naval', auth, async (req: AuthedRequest, res) => { const stake = Number(req.body?.stake); if (!Number.isSafeInteger(stake) || stake < 10_000 || stake > 50_000_000) return res.status(400).json({ error: 'Ставка — от 100 до 500 000 SC.' }); try { const game = await prisma.$transaction(async (tx) => { const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -stake, description: 'Ставка в морском бою' } }); return tx.navalGame.create({ data: { creatorId: user.id, stake, players: { create: { userId: user.id } } } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: game.id }); res.status(201).json(await navalView(game.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать игру.' }); } });
+app.post('/api/naval/:id/join', auth, async (req: AuthedRequest, res) => { try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'WAITING' || game.players.length !== 1 || game.creatorId === req.session!.id) throw new Error('Войти в эту игру нельзя.'); const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < game.stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: game.stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -game.stake, description: 'Ставка в морском бою' } }); await tx.navalPlayer.create({ data: { gameId: game.id, userId: user.id } }); await tx.navalGame.update({ where: { id: game.id }, data: { status: 'SETUP' } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в игру.' }); } });
+app.post('/api/naval/:id/ships', auth, async (req: AuthedRequest, res) => { if (!validFleet(req.body?.ships)) return res.status(400).json({ error: 'Расставь корабли: 5, 4, 3, 3 и 2 клетки.' }); try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); const player = game?.players.find((item) => item.userId === req.session!.id); if (!game || !player || !['SETUP', 'WAITING'].includes(game.status)) throw new Error('Расстановка недоступна.'); await tx.navalPlayer.update({ where: { id: player.id }, data: { ships: req.body.ships, ready: true } }); const ready = await tx.navalPlayer.count({ where: { gameId: game.id, ready: true } }); if (ready === 2) await tx.navalGame.update({ where: { id: game.id }, data: { status: 'PLAYING', turnUserId: game.creatorId } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось сохранить корабли.' }); } });
+app.post('/api/naval/:id/shot', auth, async (req: AuthedRequest, res) => { const x = Number(req.body?.x); const y = Number(req.body?.y); if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 9 || y < 0 || y > 9) return res.status(400).json({ error: 'Некорректная клетка.' }); try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'PLAYING' || game.turnUserId !== req.session!.id) throw new Error('Сейчас ход соперника.'); const enemy = game.players.find((player) => player.userId !== req.session!.id)!; const hits = (enemy.shots as Array<{ x: number; y: number; hit: boolean }>) || []; if (hits.some((shot) => shot.x === x && shot.y === y)) throw new Error('Ты уже стрелял в эту клетку.'); const shipCells = enemy.ships as Cell[]; const hit = shipCells.some((cell) => cell.x === x && cell.y === y); const shots = [...hits, { x, y, hit }]; await tx.navalPlayer.update({ where: { id: enemy.id }, data: { shots } }); const sunk = shipCells.every((cell) => shots.some((shot) => shot.hit && shot.x === cell.x && shot.y === cell.y)); if (sunk) { await tx.navalGame.update({ where: { id: game.id }, data: { status: 'FINISHED', winnerUserId: req.session!.id, finishedAt: new Date() } }); await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: game.stake * 2 } } }); await tx.transaction.create({ data: { userId: req.session!.id, type: 'NAVAL_WIN', amount: game.stake * 2, description: 'Победа в морском бою' } }); } else if (!hit) await tx.navalGame.update({ where: { id: game.id }, data: { turnUserId: enemy.userId } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Выстрел не выполнен.' }); } });
 // Results are created before their animation starts. If a browser is refreshed
 // mid-animation, reveal any pending reward on the next authenticated request so
 // a successful upgrade can never leave an invisible item in the database.
@@ -532,7 +641,9 @@ app.post('/api/admin/giveaways', auth, admin, async (req: AuthedRequest, res) =>
     res.status(201).json(giveaway);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать розыгрыш.' }); }
 });
-app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); const item = await prisma.item.create({ data: { id, name, wear, price, image, rarity } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE', metadata: { itemId: item.id } } }); res.status(201).json(item); });
+app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); try { const item = await prisma.$transaction(async (tx) => { const created = await tx.item.create({ data: { id, name, wear, price, image, rarity } }); const cases = await tx.case.findMany({ where: { active: true }, select: { id: true } }); await tx.caseItem.createMany({ data: cases.map((caseData) => ({ caseId: caseData.id, itemId: created.id, weight: Math.max(1, Math.round(100_000 / Math.max(1, created.price / 100))) })), skipDuplicates: true }); return created; }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE_AND_INJECT', metadata: { itemId: item.id } } }); res.status(201).json(item); } catch { res.status(409).json({ error: 'Предмет с таким ID уже существует.' }); } });
+app.get('/api/admin/site-settings', auth, admin, async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
+app.put('/api/admin/site-settings', auth, admin, async (req: AuthedRequest, res) => { const collectionTitle = String(req.body?.collectionTitle || '').trim(); if (!collectionTitle || collectionTitle.length > 64) return res.status(400).json({ error: 'Название должно быть от 1 до 64 символов.' }); await prisma.siteSetting.upsert({ where: { key: 'collectionTitle' }, create: { key: 'collectionTitle', value: collectionTitle }, update: { value: collectionTitle } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'COLLECTION_TITLE_UPDATE', metadata: { collectionTitle } } }); res.json({ collectionTitle }); });
 app.patch('/api/admin/items/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, wear, price, image, rarity, active } = req.body ?? {}; const item = await prisma.item.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(typeof wear === 'string' ? { wear } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof rarity === 'string' ? { rarity } : {}), ...(typeof active === 'boolean' ? { active } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_UPDATE', metadata: { itemId: item.id } } }); res.json(item); });
 app.get('/api/admin/cases', auth, admin, async (_req, res) => res.json(await prisma.case.findMany({ include: { items: { include: { item: { select: itemSelect } } } } })));
 app.post('/api/admin/cases', auth, admin, async (req: AuthedRequest, res) => {

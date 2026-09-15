@@ -53,6 +53,10 @@ export const CASES = [
   { name: 'Пеппа', slug: 'peppa-pig', price: 5499900, image: 'https://i.ibb.co/gLQQqmM4/68d4958f-3fc1-492a-9308-ed4a335cdc48.png', collection: 'Свинки Пепы', itemIds: ['20','21','22','23','24','25','26','27'], weights: {} },
   { name: 'Мама Свин', slug: 'mama-pig', price: 9999900, image: 'https://i.ibb.co/LhtQ2kgL/26c90aa5-bb72-42c8-bdde-7b44562f30b3-removebg-preview.png', collection: 'Свинки Пепы', itemIds: ['22','23','24','25','26','27','28','29'], weights: {} },
   { name: 'Папа Свин', slug: 'papa-pig', price: 14999900, image: 'https://i.ibb.co/20D5wWcg/2299f886-d122-404b-9d5b-5ab19efc3677.png', collection: 'Свинки Пепы', itemIds: ['24','25','26','27','28','29','30','31'], weights: {} },
+  { name: 'Бронзовая Свинка', slug: 'bronze-pig', price: 299900, image: 'https://i.ibb.co/yBhQB6HL/b9afd12f-6393-4daf-af18-f21d2ba1822e.png', collection: 'От рубля до ножа', itemIds: ['1','2','3','4','5','6','7','8','9','10'], weights: {} },
+  { name: 'Серебряная Свинка', slug: 'silver-pig', price: 549900, image: 'https://i.ibb.co/3bxYFqN/259db9b0-1b65-4a3c-a0db-4cd6e850ed68.png', collection: 'От рубля до ножа', itemIds: ['4','5','6','7','8','9','10','11','12','13'], weights: {} },
+  { name: 'Золотая Свинка', slug: 'gold-pig', price: 1129900, image: 'https://i.ibb.co/HLzj34nn/c11187df-fda2-4f20-b861-256468e28b05.png', collection: 'От рубля до ножа', itemIds: ['8','9','10','11','12','13','14','15','16','17'], weights: {} },
+  { name: 'Алмазная Свинка', slug: 'diamond-pig', price: 2879900, image: 'https://i.ibb.co/4gTFcZgG/5b38f5b8-f09e-4d63-a269-7736a8e372f5.png', collection: 'От рубля до ножа', itemIds: ['15','16','17','18','19','20','21','22','23','24'], weights: {} },
   // Magic cases hide their contents and never use the standard roulette.
   // The short lists and low-biased weights keep multi-drops exciting without
   // making the collection a guaranteed profit machine.
