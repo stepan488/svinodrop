@@ -97,12 +97,12 @@ async function repairCaseEconomy() {
   // damaged public case from the live catalogue; magic cases are never read or
   // changed by this repair.
   let repairedDorfus = false;
+  const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
   const dorfus = await prisma.case.findUnique({
     where: { slug: 'ok-daa' },
     include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } },
   });
   if (dorfus && dorfus.openingStyle === 'REEL' && dorfus.items.filter((entry) => entry.item.active).length < 6) {
-    const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
     const existing = new Set(dorfus.items.map((entry) => entry.itemId));
     const nearby = catalogue.filter((item) => item.price >= Math.round(dorfus.price * 0.10) && item.price <= Math.round(dorfus.price * 3));
     const additions = evenlySpaced((nearby.length >= 6 ? nearby : catalogue).filter((item) => !existing.has(item.id)), 9);
@@ -120,11 +120,30 @@ async function repairCaseEconomy() {
   for (const caseData of cases) {
     const active = caseData.items.filter((entry) => entry.item.active);
     if (active.length < 2) continue;
+    let economyItems: EconomyItem[] = active.map((entry) => ({ id: entry.item.id, price: entry.item.price }));
+    const currentMin = Math.min(...economyItems.map((item) => item.price));
+    const currentMax = Math.max(...economyItems.map((item) => item.price));
+    // Some legacy cases contained only cheap or only expensive prizes. In
+    // that situation weight changes alone cannot create fair odds, so add a
+    // small, price-appropriate bridge from the active catalogue first.
+    const needsLower = currentMin > caseData.price * 0.76;
+    const needsHigher = currentMax < caseData.price * 0.76;
+    if (needsLower || needsHigher) {
+      const known = new Set(economyItems.map((item) => item.id));
+      const candidates = catalogue.filter((item) => !known.has(item.id) && (
+        needsLower ? item.price <= Math.round(caseData.price * 0.72) : item.price >= Math.round(caseData.price * 0.82)
+      ));
+      const additions = evenlySpaced(candidates, 3);
+      if (additions.length) {
+        await prisma.caseItem.createMany({ data: additions.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: 1 })), skipDuplicates: true });
+        economyItems = [...economyItems, ...additions];
+      }
+    }
     const ratio = expectedReturn(active) / Math.max(1, caseData.price);
     // Keep hand-tuned, already sane cases intact. Only economically broken
     // tables (or the repaired singleton) are normalised once at API boot.
     if (!repairedDorfus && ratio >= 0.55 && ratio <= 0.92) continue;
-    const weights = balancedWeights(active.map((entry) => entry.item), caseData.price);
+    const weights = balancedWeights(economyItems, caseData.price);
     await prisma.$transaction(weights.map((entry) => prisma.caseItem.update({
       where: { caseId_itemId: { caseId: caseData.id, itemId: entry.itemId } },
       data: { weight: entry.weight },
