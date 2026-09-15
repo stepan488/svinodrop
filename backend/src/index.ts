@@ -95,7 +95,7 @@ const collectionOdds = {
 } as const;
 
 async function rebalanceCollectionOdds() {
-  const version = 'collection-odds-v2';
+  const version = 'collection-odds-v3';
   const marker = await prisma.siteSetting.findUnique({ where: { key: 'drop-economy-version' } });
   if (marker?.value === version) return;
   const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
@@ -115,7 +115,7 @@ async function rebalanceCollectionOdds() {
     const minPrice = Math.min(...current.map((item) => item.price)); const maxPrice = Math.max(...current.map((item) => item.price));
     const additions: EconomyItem[] = [];
     if (minPrice > caseData.price * rules.min) {
-      const low = catalogue.filter((item) => !known.has(item.id) && item.price <= Math.round(caseData.price * rules.min * 1.15)).at(-1);
+      const low = catalogue.filter((item) => !known.has(item.id) && item.price >= Math.ceil(caseData.price * rules.min) && item.price <= Math.round(caseData.price * rules.min * 1.15)).at(-1);
       if (low) { additions.push(low); known.add(low.id); }
     }
     if (maxPrice < caseData.price * rules.max) {
@@ -349,7 +349,7 @@ app.get('/api/cases', async (_req, res) => {
   res.json(cases.map((entry) => {
     if (entry.contentsHidden) return { ...entry, items: [] };
     const totalWeight = entry.items.reduce((sum, item) => sum + item.weight, 0);
-    return { ...entry, items: entry.items.map((item) => ({ ...item, chance: totalWeight ? Math.round(item.weight / totalWeight * 10_000) / 100 : 0 })) };
+    return { ...entry, items: entry.items.map((item) => ({ ...item, chance: totalWeight ? Math.round(item.weight / totalWeight * 100_000) / 1000 : 0 })) };
   }));
 });
 app.get('/api/site-settings', async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
