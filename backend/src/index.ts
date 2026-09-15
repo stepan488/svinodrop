@@ -428,7 +428,15 @@ async function battleView(id: string, userId?: string) {
   const battle = await prisma.battle.findUnique({ where: { id }, include: { players: { include: { user: { select: { username: true, avatar: true } } }, orderBy: { joinedAt: 'asc' } } } });
   if (!battle) return null;
   const caseIds = battle.caseIds as string[];
-  const foundCases = await prisma.case.findMany({ where: { id: { in: caseIds } }, select: { id: true, name: true, image: true, price: true } });
+  const foundCases = await prisma.case.findMany({
+    where: { id: { in: caseIds } },
+    select: {
+      id: true, name: true, image: true, price: true,
+      // The battle client needs the public case pool to render the same real
+      // reel that players see in a regular case opening.
+      items: { where: { item: { active: true } }, select: { id: true, weight: true, item: { select: itemSelect } } },
+    },
+  });
   const cases = caseIds.map((caseId) => foundCases.find((item) => item.id === caseId)).filter(Boolean);
   return { ...battle, caseIds, cases, players: battle.players.map(publicPlayer), isMine: battle.players.some((player) => player.userId === userId) };
 }
