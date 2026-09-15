@@ -29,7 +29,6 @@ model User {
   messages ChatMessage[]
   adminLogs AdminLog[] @relation("AdminActions")
   openings Opening[]
-  wheelBets WheelBet[]
   giveawayEntries GiveawayEntry[]
   wonGiveaways Giveaway[] @relation("GiveawayWinner")
   battlesCreated Battle[] @relation("BattleCreator")
@@ -182,33 +181,6 @@ model AdminLog {
   metadata Json?
   createdAt DateTime @default(now())
   admin User @relation("AdminActions", fields: [adminId], references: [id])
-}
-
-model WheelRound {
-  id String @id @default(uuid())
-  status String @default("BETTING")
-  targetMultiplier Int
-  bonusMultiplier Int
-  startsAt DateTime @default(now())
-  bettingClosesAt DateTime
-  settlesAt DateTime
-  settledAt DateTime?
-  createdAt DateTime @default(now())
-  bets WheelBet[]
-  @@index([status, settlesAt])
-}
-
-model WheelBet {
-  id String @id @default(uuid())
-  userId String
-  roundId String
-  targetMultiplier Int
-  amount Int
-  payout Int @default(0)
-  createdAt DateTime @default(now())
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  round WheelRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
-  @@index([roundId, userId])
 }
 
 model Giveaway {
