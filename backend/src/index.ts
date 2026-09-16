@@ -476,11 +476,12 @@ app.post('/api/inventory/sell-all', auth, async (req: AuthedRequest, res) => {
 });
 app.get('/api/profile', auth, async (req: AuthedRequest, res) => {
   const userId = req.session!.id;
-  const [user, opens, upgrades, itemCount, transactions] = await Promise.all([
+  const [user, opens, upgrades, itemCount, transactions, upgradeHistory] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: userId } }), prisma.drop.count({ where: { userId } }), prisma.upgrade.count({ where: { userId } }), prisma.inventory.count({ where: { userId, removedAt: null, revealed: true } }),
-    prisma.transaction.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 10 })
+    prisma.transaction.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 10 }),
+    prisma.upgrade.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 12, include: { sourceItem: { select: itemSelect }, targetItem: { select: itemSelect } } })
   ]);
-  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, daily: dailyStatus(user.dailyCaseClaimedAt) });
+  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt) });
 });
 const profileAvatars = ['🐷', '🐽', '👑', '🎰', '⚔️', '🦄', '🐸', '🦊', '🐯', '🦈', '👾', '🤖'];
 app.patch('/api/profile/customize', auth, async (req: AuthedRequest, res) => {
