@@ -512,9 +512,9 @@ function UpgradeDial({ chance, phase, result, mode }: { chance: number; phase: '
   }
   const arcStart = pointOnSuccessArc(90 - successArc / 2)
   const arcEnd = pointOnSuccessArc(90 + successArc / 2)
-  // This is a filled sector rather than a thin line: its area grows in direct
-  // proportion to the real chance and stays attached to the wheel itself.
-  const successSectorPath = `M 169 169 L ${arcStart.x.toFixed(2)} ${arcStart.y.toFixed(2)} A 137 137 0 ${successArc > 180 ? 1 : 0} 1 ${arcEnd.x.toFixed(2)} ${arcEnd.y.toFixed(2)} Z`
+  // The chance is a broad curved band on the lower rim. It expands from the
+  // fixed bottom arrow in both directions, just like a real landing zone.
+  const successArcPath = `M ${arcStart.x.toFixed(2)} ${arcStart.y.toFixed(2)} A 137 137 0 ${successArc > 180 ? 1 : 0} 1 ${arcEnd.x.toFixed(2)} ${arcEnd.y.toFixed(2)}`
   // The arrow itself moves; the green success segment is fixed below.
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.landingAngle || 0
@@ -523,7 +523,7 @@ function UpgradeDial({ chance, phase, result, mode }: { chance: number; phase: '
   const outcomeClass = phase === 'result' ? (result?.success ? 'success' : 'failure') : ''
   return <div className={`sd-upgrade ${phase} ${result ? 'ready' : ''} ${outcomeClass}`} style={{ '--success-size': `${safeChance * 3.6}deg`, '--needle-end': `${endAngle}deg`, '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
     <img className="sd-wheel-art" src="https://i.ibb.co/s9TD5GbD/ebb7d6c8-4f78-42b1-af6b-0c803fe48b50.png" alt="" aria-hidden="true"/>
-    <div className="sd-success-ring" aria-hidden="true"><svg viewBox="0 0 338 338"><defs><radialGradient id="svino-success-sector" cx="50%" cy="88%" r="85%"><stop offset="0" stopColor="#ffd1e9" stopOpacity=".96"/><stop offset=".38" stopColor="#ff67b6" stopOpacity=".84"/><stop offset="1" stopColor="#be176b" stopOpacity=".42"/></radialGradient></defs><path className="sd-success-sector-glow" d={successSectorPath}/><path className="sd-success-sector" d={successSectorPath}/></svg></div>
+    <div className="sd-success-ring" aria-hidden="true"><svg viewBox="0 0 338 338"><defs><linearGradient id="svino-success-arc" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#ff9bd3"/><stop offset=".48" stopColor="#ff4ca8"/><stop offset="1" stopColor="#d51a73"/></linearGradient></defs><path className="sd-success-arc-glow" d={successArcPath}/><path className="sd-success-arc-band" d={successArcPath}/></svg></div>
     <div className="sd-upgrade-disc"><div className="sd-ticks"/><div className="sd-core"><span className="sd-snout">🐽</span><small>{phase === 'spinning' ? 'СТРЕЛКА В ПОЛЁТЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>SVINO LUCK</em></div></div>
     <div className="sd-needle"><img src="https://i.ibb.co/23N6LSw7/cfb5f7f3-1a3e-43b9-a6b2-b11ec6b4e474.png" alt="" aria-hidden="true"/></div>
   </div>
