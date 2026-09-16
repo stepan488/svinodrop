@@ -466,6 +466,14 @@ function UpgradeDial({ chance, phase, result, mode, showPigOrbit }: { chance: nu
   // The pink landing pad scales with the protected chance. A small visual
   // minimum keeps a 2% chance understandable while higher chances grow wide.
   const successZoneWidth = Math.max(46, Math.min(242, Math.round(safeChance * 4.1)))
+  const successArc = Math.max(8, Math.min(324, safeChance * 3.6))
+  const pointOnSuccessArc = (angle: number) => {
+    const radians = angle * Math.PI / 180
+    return { x: 169 + 137 * Math.cos(radians), y: 169 + 137 * Math.sin(radians) }
+  }
+  const arcStart = pointOnSuccessArc(90 - successArc / 2)
+  const arcEnd = pointOnSuccessArc(90 + successArc / 2)
+  const successArcPath = `M ${arcStart.x.toFixed(2)} ${arcStart.y.toFixed(2)} A 137 137 0 ${successArc > 180 ? 1 : 0} 1 ${arcEnd.x.toFixed(2)} ${arcEnd.y.toFixed(2)}`
   // The arrow itself moves; the green success segment is fixed below.
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.landingAngle || 0
@@ -474,7 +482,7 @@ function UpgradeDial({ chance, phase, result, mode, showPigOrbit }: { chance: nu
   const outcomeClass = phase === 'result' ? (result?.success ? 'success' : 'failure') : ''
   return <div className={`sd-upgrade ${phase} ${result ? 'ready' : ''} ${outcomeClass}`} style={{ '--success-size': `${safeChance * 3.6}deg`, '--success-zone-width': `${successZoneWidth}px`, '--needle-end': `${endAngle}deg`, '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
     <img className="sd-wheel-art" src="https://i.ibb.co/s9TD5GbD/ebb7d6c8-4f78-42b1-af6b-0c803fe48b50.png" alt="" aria-hidden="true"/>
-    <div className="sd-success-ring" aria-hidden="true"><span>ЗОНА УСПЕХА · {safeChance}%</span></div>
+    <div className="sd-success-ring" aria-hidden="true"><svg viewBox="0 0 338 338"><path className="sd-success-arc-glow" d={successArcPath}/><path className="sd-success-arc-line" d={successArcPath}/></svg><span>ЗОНА УСПЕХА · {safeChance}%</span></div>
     <div className="sd-upgrade-disc"><div className="sd-ticks"/><div className="sd-core"><span className="sd-snout">🐽</span><small>{phase === 'spinning' ? 'СТРЕЛКА В ПОЛЁТЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>SVINO LUCK</em></div></div>
     {showPigOrbit && <div className="sd-pig-halo" aria-hidden="true"><div className="sd-pig-orbit"><i>🐷</i><i>🐽</i><i>🐷</i><i>🐽</i></div></div>}
     <div className="sd-needle"><img src="https://i.ibb.co/23N6LSw7/cfb5f7f3-1a3e-43b9-a6b2-b11ec6b4e474.png" alt="" aria-hidden="true"/></div>
