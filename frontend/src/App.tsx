@@ -508,13 +508,13 @@ function UpgradeDial({ chance, phase, result, mode }: { chance: number; phase: '
   const successArc = Math.max(8, Math.min(324, safeChance * 3.6))
   const pointOnSuccessArc = (angle: number) => {
     const radians = angle * Math.PI / 180
-    return { x: 169 + 137 * Math.cos(radians), y: 169 + 137 * Math.sin(radians) }
+    return { x: 169 + 146 * Math.cos(radians), y: 169 + 146 * Math.sin(radians) }
   }
   const arcStart = pointOnSuccessArc(90 - successArc / 2)
   const arcEnd = pointOnSuccessArc(90 + successArc / 2)
   // The chance is a broad curved band on the lower rim. It expands from the
   // fixed bottom arrow in both directions, just like a real landing zone.
-  const successArcPath = `M ${arcStart.x.toFixed(2)} ${arcStart.y.toFixed(2)} A 137 137 0 ${successArc > 180 ? 1 : 0} 1 ${arcEnd.x.toFixed(2)} ${arcEnd.y.toFixed(2)}`
+  const successArcPath = `M ${arcStart.x.toFixed(2)} ${arcStart.y.toFixed(2)} A 146 146 0 ${successArc > 180 ? 1 : 0} 1 ${arcEnd.x.toFixed(2)} ${arcEnd.y.toFixed(2)}`
   // The arrow itself moves; the green success segment is fixed below.
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.landingAngle || 0
