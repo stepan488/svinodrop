@@ -618,6 +618,90 @@ app.post('/api/upgrades/:id/reveal', auth, async (req: AuthedRequest, res) => {
   res.json({ ok: true });
 });
 
+type MinesStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT' | 'WON';
+type MinesRecord = { version: 1; status: MinesStatus; mineCount: 3 | 6 | 9; wager: number; mines: number[]; opened: number[]; createdAt: string; completedAt?: string };
+const minesOpeningKey = 'mines-active-v1';
+const minesTables: Record<3 | 6 | 9, number[]> = {
+  3: [1.07, 1.22, 1.4, 1.62, 1.89, 2.22, 2.63, 3.15, 3.82, 4.7, 5.87, 7.47, 9.71, 12.94, 17.79, 25.41, 38.11, 60.97, 106.69, 213.38, 533.45, 2133.8],
+  6: [1.25, 1.66, 2.24, 3.08, 4.31, 6.15, 8.98, 13.47, 20.81, 33.29, 55.48, 97.09, 180.31, 360.62, 793.36, 1983.4, 5950.2, 23800.8, 166605.6],
+  9: [1.48, 2.36, 3.87, 6.54, 11.44, 20.8, 39.52, 79.04, 167.96, 383.9, 959.75, 2687.3, 8733.72, 34934.88, 192141.84, 1921418.4],
+};
+const isMinesRecord = (value: unknown): value is MinesRecord => Boolean(value && typeof value === 'object' && (value as MinesRecord).version === 1 && Array.isArray((value as MinesRecord).mines) && Array.isArray((value as MinesRecord).opened) && [3, 6, 9].includes((value as MinesRecord).mineCount));
+const minesMultiplier = (game: MinesRecord) => game.opened.length ? minesTables[game.mineCount][game.opened.length - 1] : 1;
+const minesPayout = (game: MinesRecord) => Math.round(game.wager * minesMultiplier(game));
+function createMines(mineCount: 3 | 6 | 9, wager: number): MinesRecord {
+  const cells = Array.from({ length: 25 }, (_, index) => index);
+  const mines: number[] = [];
+  for (let index = 0; index < mineCount; index += 1) mines.push(cells.splice(crypto.randomInt(cells.length), 1)[0]);
+  return { version: 1, status: 'PLAYING', mineCount, wager, mines, opened: [], createdAt: new Date().toISOString() };
+}
+function publicMines(game: MinesRecord) {
+  const multiplier = minesMultiplier(game);
+  return { status: game.status, mineCount: game.mineCount, wager: game.wager, opened: game.opened, mines: game.status === 'PLAYING' ? undefined : game.mines, multiplier, payout: game.status === 'LOST' ? 0 : minesPayout(game), safeTotal: 25 - game.mineCount, createdAt: game.createdAt, completedAt: game.completedAt };
+}
+
+app.get('/api/mines', auth, async (req: AuthedRequest, res) => {
+  const entry = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: minesOpeningKey } } });
+  const game = entry && isMinesRecord(entry.response) ? entry.response : null;
+  res.json({ game: game ? publicMines(game) : null });
+});
+app.post('/api/mines/start', auth, async (req: AuthedRequest, res) => {
+  const wager = money(req.body?.wager); const mineCount = Number(req.body?.mineCount);
+  if (!wager || wager < 10_000 || wager > 10_000_000 || ![3, 6, 9].includes(mineCount)) return res.status(400).json({ error: 'Ставка — от 100 до 100 000 SC. Выбери 3, 6 или 9 мин.' });
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: minesOpeningKey } } });
+      if (current && isMinesRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущую игру в мины.');
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      if (user.balance < wager) throw new Error('Недостаточно свинокоинов для ставки.');
+      const next = createMines(mineCount as 3 | 6 | 9, wager);
+      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: wager } } });
+      await tx.transaction.create({ data: { userId: user.id, type: 'MINES_BET', amount: -wager, description: `Ставка в «Свиных минах» · ${mineCount} мин` } });
+      await tx.opening.upsert({ where: { userId_key: { userId: user.id, key: minesOpeningKey } }, create: { userId: user.id, key: minesOpeningKey, response: next }, update: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.status(201).json({ game: publicMines(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось начать игру' }); }
+});
+app.post('/api/mines/open', auth, async (req: AuthedRequest, res) => {
+  const cell = Number(req.body?.cell);
+  if (!Number.isInteger(cell) || cell < 0 || cell >= 25) return res.status(400).json({ error: 'Выбери клетку на поле.' });
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: minesOpeningKey } } });
+      if (!isMinesRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Начни новую игру в мины.');
+      if (entry.response.opened.includes(cell)) throw new Error('Эта клетка уже открыта.');
+      const opened = [...entry.response.opened, cell];
+      const hitMine = entry.response.mines.includes(cell);
+      const next: MinesRecord = { ...entry.response, opened, status: hitMine ? 'LOST' : opened.length === 25 - entry.response.mineCount ? 'WON' : 'PLAYING', completedAt: hitMine || opened.length === 25 - entry.response.mineCount ? new Date().toISOString() : undefined };
+      if (next.status === 'WON') {
+        const payout = minesPayout(next);
+        await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
+        await tx.transaction.create({ data: { userId: req.session!.id, type: 'MINES_WIN', amount: payout, description: `Поле «Свиных мин» очищено · ×${minesMultiplier(next)}` } });
+      }
+      await tx.opening.update({ where: { id: entry.id }, data: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ game: publicMines(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось открыть клетку' }); }
+});
+app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: minesOpeningKey } } });
+      if (!isMinesRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Нет активной игры для вывода.');
+      if (!entry.response.opened.length) throw new Error('Сначала открой хотя бы одну клетку.');
+      const next: MinesRecord = { ...entry.response, status: 'CASHED_OUT', completedAt: new Date().toISOString() };
+      const payout = minesPayout(next);
+      await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'MINES_CASHOUT', amount: payout, description: `Вывод из «Свиных мин» · ×${minesMultiplier(next)}` } });
+      await tx.opening.update({ where: { id: entry.id }, data: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ game: publicMines(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш' }); }
+});
+
 type BattleMode = 'NORMAL' | 'CURSED' | 'JACKPOT' | 'LAST';
 const battleModes = new Set<BattleMode>(['NORMAL', 'CURSED', 'JACKPOT', 'LAST']);
 const publicPlayer = (player: { id: string; userId: string | null; botName: string | null; user?: { username: string; avatar: string | null } | null }) => ({ id: player.id, userId: player.userId, username: player.user?.username || player.botName || 'Бот-свин', avatar: player.user?.avatar || '🤖' });
