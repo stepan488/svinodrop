@@ -233,15 +233,15 @@ async function repairCaseEconomy() {
   if (corrected) console.log(`Исправлены шансы в ${corrected} кейсах.`);
 }
 function upgradeLandingAngle(chance: number, success: boolean) {
-  // The visible green sector is centred at 180°. The server chooses a random
-  // point inside it for a win, or anywhere outside it for a loss, so the
-  // animation reflects the protected result without always landing dead-centre.
+  // The pointer begins below the dial, where the pink success arc is centred.
+  // The server chooses a protected point inside that arc on a win.
   const successArc = Math.max(8, Math.min(324, chance * 3.6));
-  const start = 180 - successArc / 2;
+  const start = -successArc / 2;
   const arcSteps = Math.max(1, Math.round(successArc));
+  const circleAngle = (value: number) => (value % 360 + 360) % 360;
   const angle = success
-    ? start + crypto.randomInt(arcSteps)
-    : (start + successArc + crypto.randomInt(Math.max(1, Math.round(360 - successArc)))) % 360;
+    ? circleAngle(start + crypto.randomInt(arcSteps))
+    : circleAngle(start + successArc + crypto.randomInt(Math.max(1, Math.round(360 - successArc))));
   return Math.round(1440 + angle);
 }
 function dailyStatus(lastClaim: Date | null) {
