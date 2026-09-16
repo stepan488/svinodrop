@@ -470,9 +470,11 @@ function UpgradeDial({ chance, phase, result, mode, showPigOrbit }: { chance: nu
   // used to reveal a win before the animation had finished.
   const outcomeClass = phase === 'result' ? (result?.success ? 'success' : 'failure') : ''
   return <div className={`sd-upgrade ${phase} ${result ? 'ready' : ''} ${outcomeClass}`} style={{ '--success-size': `${safeChance * 3.6}deg`, '--needle-end': `${endAngle}deg`, '--motion-duration': `${spinDuration[mode]}ms` } as React.CSSProperties}>
+    <img className="sd-wheel-art" src="https://i.ibb.co/s9TD5GbD/ebb7d6c8-4f78-42b1-af6b-0c803fe48b50.png" alt="" aria-hidden="true"/>
+    <div className="sd-success-ring" aria-hidden="true"><span>ЗОНА УСПЕХА · {safeChance}%</span></div>
     <div className="sd-upgrade-disc"><div className="sd-ticks"/><div className="sd-core"><span className="sd-snout">🐽</span><small>{phase === 'spinning' ? 'СТРЕЛКА В ПОЛЁТЕ' : phase === 'result' ? (result?.success ? 'СОЧНОЕ ПОПАДАНИЕ' : 'БЕКОН УСКОЛЬЗНУЛ') : 'ТВОЙ ШАНС'}</small><b>{phase === 'result' ? (result?.success ? 'WIN' : 'FAIL') : `${safeChance}%`}</b><em>SVINO LUCK</em></div></div>
     {showPigOrbit && <div className="sd-pig-halo" aria-hidden="true"><div className="sd-pig-orbit"><i>🐷</i><i>🐽</i><i>🐷</i><i>🐽</i></div></div>}
-    <div className="sd-needle"><i/></div>
+    <div className="sd-needle"><img src="https://i.ibb.co/23N6LSw7/cfb5f7f3-1a3e-43b9-a6b2-b11ec6b4e474.png" alt="" aria-hidden="true"/></div>
   </div>
 }
 
