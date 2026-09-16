@@ -456,26 +456,31 @@ function CaseReel({ pool, winner, phase, compact, onFinished }: { pool: Skin[]; 
 }
 
 function RiskReveal({ pool, winner, phase, onFinished }: { pool: Skin[]; winner?: Skin; phase: 'idle' | 'spinning' | 'result'; onFinished: () => void }) {
-  const seed = winner ? [...winner.id].reduce((sum, character) => sum + character.charCodeAt(0), 0) : 1
-  const attempts = 1 + seed % 5
   const fogSlots = 5
   const [revealed, setRevealed] = useState(0)
+  const [run, setRun] = useState<{ attempts: number; path: number[]; previews: (Skin | undefined)[] }>({ attempts: 0, path: [], previews: [] })
   useEffect(() => {
     setRevealed(0)
     if (phase !== 'spinning' || !winner) return
+    const distinctPool = Array.from(new Map(pool.map((skin) => [skin.id, skin])).values())
+    const shuffle = <T,>(items: T[]) => [...items].sort(() => Math.random() - .5)
+    const attempts = 3 + Math.floor(Math.random() * 3)
+    const path = shuffle(Array.from({ length: fogSlots }, (_, index) => index)).slice(0, attempts)
+    const finalIndex = path.at(-1) || 0
+    const falseDrops = shuffle(distinctPool.filter((skin) => skin.id !== winner.id))
+    let falseDropIndex = 0
+    const previews = Array.from({ length: fogSlots }, (_, index) => index === finalIndex ? winner : falseDrops[falseDropIndex++] || winner)
+    setRun({ attempts, path, previews })
     const timers = Array.from({ length: attempts }, (_, index) => window.setTimeout(() => setRevealed(index + 1), (index + 1) * 980))
     const finish = window.setTimeout(onFinished, attempts * 980 + 640)
     return () => { timers.forEach(window.clearTimeout); window.clearTimeout(finish) }
-  }, [phase, winner?.id, attempts])
-  const distinctPool = Array.from(new Map(pool.map((skin) => [skin.id, skin])).values())
-  const path = Array.from({ length: attempts }, (_, index) => (seed + index * 2) % fogSlots)
-  const finalIndex = path.at(-1) || 0
-  const previews = Array.from({ length: fogSlots }, (_, index) => index === finalIndex ? winner : distinctPool[(seed + index * 3) % Math.max(distinctPool.length, 1)] || winner)
-  const pointerIndex = phase === 'spinning' ? path[Math.min(revealed, attempts - 1)] : finalIndex
+  }, [phase, winner?.id])
+  const finalIndex = run.path.at(-1) || 0
+  const pointerIndex = phase === 'spinning' ? run.path[Math.min(revealed, Math.max(0, run.attempts - 1))] ?? 0 : finalIndex
   return <section className={`risk-reveal ${phase} ${winner ? 'ready' : 'waiting'}`} style={{ '--risk-columns': fogSlots, '--risk-pointer': `${(pointerIndex + .5) / fogSlots * 100}%` } as React.CSSProperties}>
     <div className="risk-reveal-head"><span>🎲</span><div><small>АЗАРТНАЯ ПРОВЕРКА</small><b>{winner ? 'СТРЕЛКА ВЫБИРАЕТ ЯЧЕЙКУ' : 'СВИНОСЕРВЕР ПРЯЧЕТ ПРИЗ'}</b></div></div>
-    <div className="risk-question-reel"><i className="risk-pointer">▼</i><div className="risk-question-row">{previews.map((skin, index) => { const open = phase === 'result' || path.slice(0, revealed).includes(index); const final = index === finalIndex; return <article className={`${open ? 'opened' : ''} ${index === pointerIndex && phase === 'spinning' ? 'active' : ''} ${open && final ? 'final' : ''}`} key={`${skin?.id || 'question'}-${index}`}>{open && skin ? <><img src={skin.image} alt=""/><small>{final ? 'ТВОЙ ПРИЗ' : 'ЛОЖНЫЙ СЛЕД'}</small></> : <span>?</span>}</article> })}</div></div>
-    <p>{phase === 'spinning' ? 'Приз может оказаться в любой ячейке — даже в первой.' : 'Барабан остановился: остальные ячейки раскрыты, а приз уже в твоём инвентаре.'}</p>
+    <div className="risk-question-reel"><i className="risk-pointer">▼</i><div className="risk-question-row">{Array.from({ length: fogSlots }, (_, index) => { const skin = run.previews[index]; const open = phase === 'result' || run.path.slice(0, revealed).includes(index); const final = index === finalIndex; return <article className={`${open ? 'opened' : ''} ${index === pointerIndex && phase === 'spinning' ? 'active' : ''} ${open && final ? 'final' : ''}`} key={`${winner?.id || 'question'}-${index}`}>{open && skin ? <><img src={skin.image} alt=""/><small>{final ? 'ТВОЙ ПРИЗ' : 'ЛОЖНЫЙ СЛЕД'}</small></> : <span>?</span>}</article> })}</div></div>
+    <p>{phase === 'spinning' ? 'Каждый запуск собирает новый набор из разных предметов кейса. Приз может оказаться в любой ячейке.' : 'Барабан остановился: все пять разных ячеек раскрыты, а приз уже в твоём инвентаре.'}</p>
   </section>
 }
 
