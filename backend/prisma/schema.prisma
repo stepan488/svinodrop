@@ -249,6 +249,7 @@ model NavalGame {
   stake Int
   status String @default("WAITING")
   turnUserId String?
+  turnEndsAt DateTime?
   winnerUserId String?
   createdAt DateTime @default(now())
   finishedAt DateTime?
@@ -260,12 +261,13 @@ model NavalGame {
 model NavalPlayer {
   id String @id @default(uuid())
   gameId String
-  userId String
+  userId String?
+  botName String?
   ships Json?
   shots Json @default("[]")
   ready Boolean @default(false)
   game NavalGame @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@unique([gameId, userId])
 }
 
