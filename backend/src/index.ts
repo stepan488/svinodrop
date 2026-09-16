@@ -657,21 +657,27 @@ async function settleBattle(id: string) {
       });
       return { player: publicPlayer(player), drops, total: drops.reduce((sum, drop) => sum + drop.value, 0) };
     });
-    let winnerIndex = 0;
-    if (battle.mode === 'CURSED') winnerIndex = rounds.reduce((best, row, index) => row.total < rounds[best].total ? index : best, 0);
-    else if (battle.mode === 'LAST') winnerIndex = rounds.reduce((best, row, index) => row.drops.at(-1)!.value > rounds[best].drops.at(-1)!.value ? index : best, 0);
-    else if (battle.mode === 'JACKPOT') {
-      const total = rounds.reduce((sum, row) => sum + row.total, 0) || rounds.length;
+    const chooseJackpot = (indexes: number[]) => {
+      const total = indexes.reduce((sum, index) => sum + Math.max(1, rounds[index].total), 0);
       let point = crypto.randomInt(total);
-      for (let index = 0; index < rounds.length; index += 1) { point -= rounds[index].total || 1; if (point < 0) { winnerIndex = index; break; } }
-    } else winnerIndex = rounds.reduce((best, row, index) => row.total > rounds[best].total ? index : best, 0);
+      for (const index of indexes) { point -= Math.max(1, rounds[index].total); if (point < 0) return index; }
+      return indexes.at(-1)!;
+    };
+    let winnerIndex = 0; let jackpotPlayerIndexes: number[] | undefined;
+    if (battle.mode === 'JACKPOT') { jackpotPlayerIndexes = rounds.map((_, index) => index); winnerIndex = chooseJackpot(jackpotPlayerIndexes); }
+    else {
+      const score = battle.mode === 'CURSED' ? Math.min(...rounds.map((row) => row.total)) : battle.mode === 'LAST' ? Math.max(...rounds.map((row) => row.drops.at(-1)!.value)) : Math.max(...rounds.map((row) => row.total));
+      const tied = rounds.map((row, index) => ({ row, index })).filter(({ row }) => (battle.mode === 'LAST' ? row.drops.at(-1)!.value : row.total) === score).map(({ index }) => index);
+      winnerIndex = tied[0];
+      if (tied.length > 1) { jackpotPlayerIndexes = tied; winnerIndex = chooseJackpot(tied); }
+    }
     const winner = battle.players[winnerIndex];
     const allDrops = rounds.flatMap((round) => round.drops);
     if (winner.userId) {
       await tx.inventory.createMany({ data: allDrops.map((drop) => ({ userId: winner.userId!, itemId: drop.item.id, obtainedFrom: `battle:${battle.id}`, revealed: true })) });
       await tx.transaction.create({ data: { userId: winner.userId, type: 'BATTLE_WIN', amount: 0, description: `Победа в кейс-баттле · ${allDrops.length} предметов` } });
     }
-    await tx.battle.update({ where: { id: battle.id }, data: { status: 'FINISHED', winnerUserId: winner.userId, results: { rounds, winnerIndex }, settledAt: new Date() } });
+    await tx.battle.update({ where: { id: battle.id }, data: { status: 'FINISHED', winnerUserId: winner.userId, results: { rounds, winnerIndex, jackpotPlayerIndexes }, settledAt: new Date() } });
     return { id: battle.id, winner: publicPlayer(winner), rounds, mode: battle.mode };
   }, { isolationLevel: 'Serializable' });
   if (settled) io.emit('battle:updated', { id: settled.id });
@@ -743,15 +749,6 @@ function validFleet(cells: unknown): cells is Cell[] {
   }
   return sizes.sort((a, b) => a - b).join(',') === '1,1,2,2,3';
 }
-function randomNavalFleet(): Cell[] {
-  const fleet: Cell[] = []; const sizes = [3, 2, 2, 1, 1];
-  for (const size of sizes) for (let attempt = 0; attempt < 500; attempt += 1) {
-    const vertical = size > 1 && crypto.randomInt(2) === 1; const x = crypto.randomInt(vertical ? 8 : 9 - size); const y = crypto.randomInt(vertical ? 9 - size : 8);
-    const cells = Array.from({ length: size }, (_, index) => ({ x: x + (vertical ? 0 : index), y: y + (vertical ? index : 0) }));
-    if (cells.every((cell) => fleet.every((placed) => Math.abs(cell.x - placed.x) > 1 || Math.abs(cell.y - placed.y) > 1))) { fleet.push(...cells); break; }
-  }
-  return validFleet(fleet) ? fleet : randomNavalFleet();
-}
 function closedShipPerimeter(ship: Cell[], existing: NavalShot[]): NavalShot[] {
   const occupied = new Set(ship.map((cell) => `${cell.x}:${cell.y}`)); const used = new Set(existing.map((shot) => `${shot.x}:${shot.y}`)); const border: NavalShot[] = [];
   for (const cell of ship) for (let offsetX = -1; offsetX <= 1; offsetX += 1) for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
@@ -769,7 +766,6 @@ app.get('/api/naval/games', auth, async (_req, res) => res.json(await prisma.nav
 app.get('/api/naval/:id', auth, async (req: AuthedRequest, res) => { const game = await navalView(req.params.id, req.session!.id); if (!game) return res.status(404).json({ error: 'Игра не найдена.' }); res.json(game); });
 app.post('/api/naval', auth, async (req: AuthedRequest, res) => { const stake = Number(req.body?.stake); if (!Number.isSafeInteger(stake) || stake < 10_000 || stake > 50_000_000) return res.status(400).json({ error: 'Ставка — от 100 до 500 000 SC.' }); try { const game = await prisma.$transaction(async (tx) => { const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -stake, description: 'Ставка в морском бою' } }); return tx.navalGame.create({ data: { creatorId: user.id, stake, players: { create: { userId: user.id } } } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: game.id }); res.status(201).json(await navalView(game.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать игру.' }); } });
 app.post('/api/naval/:id/join', auth, async (req: AuthedRequest, res) => { try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'WAITING' || game.players.length !== 1 || game.creatorId === req.session!.id) throw new Error('Войти в эту игру нельзя.'); const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < game.stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: game.stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -game.stake, description: 'Ставка в морском бою' } }); await tx.navalPlayer.create({ data: { gameId: game.id, userId: user.id } }); await tx.navalGame.update({ where: { id: game.id }, data: { status: 'SETUP' } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в игру.' }); } });
-app.post('/api/naval/:id/bot', auth, async (req: AuthedRequest, res) => { try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'WAITING' || game.creatorId !== req.session!.id || game.players.length !== 1) throw new Error('Добавить бота сейчас нельзя.'); await tx.navalPlayer.create({ data: { gameId: game.id, botName: `Адмирал Свинобот #${crypto.randomInt(100, 999)}`, ships: randomNavalFleet(), ready: true } }); await tx.navalGame.update({ where: { id: game.id }, data: { status: 'SETUP' } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось добавить бота.' }); } });
 app.post('/api/naval/:id/ships', auth, async (req: AuthedRequest, res) => { if (!validFleet(req.body?.ships)) return res.status(400).json({ error: 'Расставь короткий флот: два однопалубных, два двухпалубных и один трёхпалубный корабль.' }); try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); const player = game?.players.find((item) => item.userId === req.session!.id); if (!game || !player || !['SETUP', 'WAITING'].includes(game.status)) throw new Error('Расстановка недоступна.'); await tx.navalPlayer.update({ where: { id: player.id }, data: { ships: req.body.ships, ready: true } }); const ready = await tx.navalPlayer.count({ where: { gameId: game.id, ready: true } }); if (ready === 2) await tx.navalGame.update({ where: { id: game.id }, data: { status: 'PLAYING', turnUserId: game.creatorId, turnEndsAt: new Date(Date.now() + 30_000) } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось сохранить корабли.' }); } });
 app.post('/api/naval/:id/shot', auth, async (req: AuthedRequest, res) => { const x = Number(req.body?.x); const y = Number(req.body?.y); if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 7 || y < 0 || y > 7) return res.status(400).json({ error: 'Некорректная клетка.' }); try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'PLAYING' || game.turnUserId !== req.session!.id) throw new Error('Сейчас ход соперника.'); const enemy = game.players.find((player) => player.userId !== req.session!.id)!; const hits = (enemy.shots as NavalShot[]) || []; if (hits.some((shot) => shot.x === x && shot.y === y)) throw new Error('Ты уже стрелял в эту клетку.'); const shipCells = enemy.ships as Cell[]; const hit = shipCells.some((cell) => cell.x === x && cell.y === y); const priorHits = hits.filter((shot) => shot.hit); const ship = hit ? fleetGroups(shipCells).find((group) => group.some((cell) => cell.x === x && cell.y === y)) : undefined; const sunkShip = Boolean(ship && ship.every((cell) => [...priorHits, { x, y, hit }].some((shot) => shot.hit && shot.x === cell.x && shot.y === cell.y))); const finalShot: NavalShot = { x, y, hit, sunk: sunkShip }; const shots = [...hits, finalShot, ...(sunkShip && ship ? closedShipPerimeter(ship, [...hits, finalShot]) : [])]; await tx.navalPlayer.update({ where: { id: enemy.id }, data: { shots } }); const sunk = shipCells.every((cell) => shots.some((shot) => shot.hit && shot.x === cell.x && shot.y === cell.y)); if (sunk) { await tx.navalGame.update({ where: { id: game.id }, data: { status: 'FINISHED', winnerUserId: req.session!.id, finishedAt: new Date(), turnEndsAt: null } }); await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: game.stake * 2 } } }); await tx.transaction.create({ data: { userId: req.session!.id, type: 'NAVAL_WIN', amount: game.stake * 2, description: 'Победа в морском бою' } }); } else await tx.navalGame.update({ where: { id: game.id }, data: { turnUserId: hit ? req.session!.id : enemy.userId, turnEndsAt: new Date(Date.now() + (enemy.botName && !hit ? 1_200 : 30_000)) } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Выстрел не выполнен.' }); } });
 async function advanceNavalGames() {

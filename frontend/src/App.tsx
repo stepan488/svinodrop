@@ -13,7 +13,7 @@ type Feed = { username: string; item: Skin; kind: string }
 type LeaderboardRow = { id: string; username: string; avatar: string | null; balance: number; inventoryValue: number; skins: number; total: number; rank: number }
 type SpinMode = 'FAST' | 'SLOW' | 'RISK'
 type Giveaway = { id: string; title: string; kind: string; entryPrice: number; startsAt: string; endsAt: string; prizeItem: Skin; entries: number; automatic: boolean }
-type Battle = { id: string; status: string; mode: 'NORMAL' | 'CURSED' | 'JACKPOT' | 'LAST'; playerLimit: number; private: boolean; fast?: boolean; inviteCode: string; creatorId: string; players: { id: string; userId: string | null; username: string; avatar: string | null }[]; cases: Pick<Case, 'id' | 'name' | 'image' | 'price' | 'items'>[]; results?: { rounds: { player: { username: string; avatar?: string | null }; drops: { caseId?: string; caseName?: string; item: Skin; value: number }[]; total: number }[]; winnerIndex: number }; winnerUserId?: string | null; isMine: boolean }
+type Battle = { id: string; status: string; mode: 'NORMAL' | 'CURSED' | 'JACKPOT' | 'LAST'; playerLimit: number; private: boolean; fast?: boolean; inviteCode: string; creatorId: string; players: { id: string; userId: string | null; username: string; avatar: string | null }[]; cases: Pick<Case, 'id' | 'name' | 'image' | 'price' | 'items'>[]; results?: { rounds: { player: { username: string; avatar?: string | null }; drops: { caseId?: string; caseName?: string; item: Skin; value: number }[]; total: number }[]; winnerIndex: number; jackpotPlayerIndexes?: number[] }; winnerUserId?: string | null; isMine: boolean }
 type NavalShot = { x: number; y: number; hit: boolean; sunk?: boolean; blocked?: boolean }
 type NavalGame = { id: string; stake: number; status: string; turnUserId: string | null; turnEndsAt?: string | null; winnerUserId: string | null; mine: { ready: boolean; ships: { x: number; y: number }[]; shots: NavalShot[] }; opponent: { username: string; avatar: string | null; ready: boolean; bot?: boolean; shots: NavalShot[] } | null }
 
@@ -261,6 +261,9 @@ function BattleShowcase({ battle }: { battle: Battle }) {
   const spinMs = fast ? 1350 : 3600
   const revealMs = fast ? 520 : 1150
   const jackpotMs = 10_000
+  const jackpotPlayerIndexes = results.jackpotPlayerIndexes?.length ? results.jackpotPlayerIndexes : battle.mode === 'JACKPOT' ? rounds.map((_, index) => index) : [];
+  const isJackpotFinish = jackpotPlayerIndexes.length > 0;
+  const isTieBreaker = isJackpotFinish && battle.mode !== 'JACKPOT';
   useEffect(() => {
     setRoundIndex(0);
     setStage('spin');
@@ -279,15 +282,15 @@ function BattleShowcase({ battle }: { battle: Battle }) {
           if (index + 1 < maxDrops) playRound(index + 1);
           else {
             setStage('finale'); setFinale(true);
-            if (battle.mode === 'JACKPOT') after(jackpotMs, () => setJackpotFinished(true));
+            if (isJackpotFinish) after(jackpotMs, () => setJackpotFinished(true));
           }
         });
       });
     };
     after(fast ? 150 : 420, () => playRound(0));
     return () => timers.forEach(window.clearTimeout);
-  }, [battle.id, battle.fast, maxDrops]);
-  const jackpotTotal = rounds.reduce((sum, round) => sum + Math.max(1, round.total), 0);
+  }, [battle.id, battle.fast, maxDrops, isJackpotFinish]);
+  const jackpotTotal = jackpotPlayerIndexes.reduce((sum, index) => sum + Math.max(1, rounds[index].total), 0);
   const activeRound = Math.min(roundIndex, Math.max(0, maxDrops - 1));
   const isOpening = stage === 'spin';
   const visibleDrops = stage === 'spin' ? activeRound : Math.min(maxDrops, activeRound + 1);
@@ -296,16 +299,16 @@ function BattleShowcase({ battle }: { battle: Battle }) {
   const activeCase = battle.cases[activeRound];
   const reelPool = activeCase?.items?.map((entry) => entry.item) || [];
   const decisive = battle.mode === 'LAST' && activeRound === maxDrops - 1;
-  const winnerKnown = battle.mode !== 'JACKPOT' || jackpotFinished;
-  const chanceSlots = rounds.flatMap((round, playerIndex) => Array.from({ length: Math.max(1, Math.round(Math.max(1, round.total) / jackpotTotal * 24)) }, () => playerIndex));
+  const winnerKnown = !isJackpotFinish || jackpotFinished;
+  const chanceSlots = jackpotPlayerIndexes.flatMap((playerIndex) => Array.from({ length: Math.max(1, Math.round(Math.max(1, rounds[playerIndex].total) / jackpotTotal * 24)) }, () => playerIndex));
   const winnerSlot = chanceSlots.findIndex((entry) => entry === results.winnerIndex);
   const jackpotCycles = 9;
   const jackpotTarget = chanceSlots.length * (jackpotCycles - 2) + Math.max(0, winnerSlot);
   const jackpotStart = Math.min(8, jackpotTarget);
   const jackpotEntries = Array.from({ length: chanceSlots.length * jackpotCycles }, (_, index) => chanceSlots[index % chanceSlots.length]);
-  return <div className={`battle-showcase battle-case-window ${battle.mode === 'LAST' ? 'battle-last-mode' : ''} ${fast ? 'battle-fast-mode' : ''} ${stage === 'finale' && battle.mode === 'JACKPOT' ? 'jackpot-focus' : ''}`}>
+  return <div className={`battle-showcase battle-case-window ${battle.mode === 'LAST' ? 'battle-last-mode' : ''} ${fast ? 'battle-fast-mode' : ''} ${stage === 'finale' && isJackpotFinish ? 'jackpot-focus' : ''}`}>
     <div className="battle-rounds-strip">{battle.cases.map((caseData, index) => <div className={`${index < visibleDrops ? 'done' : ''} ${index === activeRound && isOpening ? 'current' : ''} ${battle.mode === 'LAST' && index === maxDrops - 1 ? 'decisive' : ''}`} key={`${caseData.id}-${index}`}><small>{index + 1}</small><img src={caseData.image} alt={caseData.name}/></div>)}</div>
-    <div className="battle-round-status"><span>{isOpening ? decisive ? '🔥 РЕШАЮЩИЙ КЕЙС · ПОСЛЕДНИЙ ДРОП ОПРЕДЕЛИТ ПОБЕДИТЕЛЯ' : 'КРУТИМ ОДИНАКОВЫЙ КЕЙС ДЛЯ ВСЕХ' : battle.mode === 'JACKPOT' && !jackpotFinished ? 'ДЖЕКПОТ ВРАЩАЕТСЯ · ВЫБИРАЕМ ПОБЕДИТЕЛЯ' : 'РАУНД ЗАВЕРШЁН'}</span><b>{isOpening ? `${decisive ? 'РЕШАЮЩИЙ · ' : ''}РАУНД ${activeRound + 1} / ${maxDrops}` : 'ВСЕ КЕЙСЫ ОТКРЫТЫ'}</b></div>
+    <div className="battle-round-status"><span>{isOpening ? decisive ? '🔥 РЕШАЮЩИЙ КЕЙС · ПОСЛЕДНИЙ ДРОП ОПРЕДЕЛИТ ПОБЕДИТЕЛЯ' : 'КРУТИМ ОДИНАКОВЫЙ КЕЙС ДЛЯ ВСЕХ' : isJackpotFinish && !jackpotFinished ? isTieBreaker ? 'НИЧЬЯ · ДЖЕКПОТ ВРАЩАЕТСЯ · ВЫБИРАЕМ ПОБЕДИТЕЛЯ' : 'ДЖЕКПОТ ВРАЩАЕТСЯ · ВЫБИРАЕМ ПОБЕДИТЕЛЯ' : 'РАУНД ЗАВЕРШЁН'}</span><b>{isOpening ? `${decisive ? 'РЕШАЮЩИЙ · ' : ''}РАУНД ${activeRound + 1} / ${maxDrops}` : isTieBreaker ? 'НИЧЬЯ · ФИНАЛЬНЫЙ РОЗЫГРЫШ' : 'ВСЕ КЕЙСЫ ОТКРЫТЫ'}</b></div>
     <div className="battle-active-case">{activeCase && <><img src={activeCase.image} alt=""/><div><small>{isOpening ? 'СЕЙЧАС ОТКРЫВАЕМ' : 'ПОСЛЕДНИЙ ОТКРЫТЫЙ КЕЙС'}</small><b>{activeCase.name}</b></div>{decisive && <strong>🔥 РЕШАЮЩИЙ</strong>}</>}</div>
     <div className="battle-arena">{rounds.map((round, playerIndex) => {
       const drop = round.drops[activeRound]; const visible = !isOpening && drop;
@@ -317,10 +320,10 @@ function BattleShowcase({ battle }: { battle: Battle }) {
         <div className="battle-history">{round.drops.slice(0, visibleDrops).map((pastDrop, index) => <span key={`${pastDrop.item.id}-${index}`} title={pastDrop.item.name}><img src={pastDrop.item.image} alt=""/><em>{coins(pastDrop.value)}</em></span>)}</div>
       </article>
     })}</div>
-    {stage === 'finale' && battle.mode === 'JACKPOT' && <div className={`battle-jackpot-finale ${jackpotFinished ? 'finished' : 'spinning'}`} style={{ '--jackpot-duration': `${jackpotMs}ms` } as React.CSSProperties} aria-label="Финальный джекпот">
-      <div className="battle-jackpot-head"><span>🎰</span><div><small>ФИНАЛЬНЫЙ РОЗЫГРЫШ</small><b>Джекпот банка</b></div><em>Шанс зависит от стоимости всех дропов</em></div><div className="battle-jackpot-players">{rounds.map((round, playerIndex) => { const percent = Math.max(1, round.total) / jackpotTotal * 100; return <span className={`ticket-${playerIndex % 4} ${jackpotFinished && playerIndex === results.winnerIndex ? 'winner' : ''}`} key={round.player.username}><i>{round.player.avatar || '🐷'}</i><b>{round.player.username}</b><em>{percent.toFixed(0)}%</em></span> })}</div>
+    {stage === 'finale' && isJackpotFinish && <div className={`battle-jackpot-finale ${jackpotFinished ? 'finished' : 'spinning'}`} style={{ '--jackpot-duration': `${jackpotMs}ms` } as React.CSSProperties} aria-label="Финальный джекпот">
+      <div className="battle-jackpot-head"><span>🎰</span><div><small>{isTieBreaker ? 'НИЧЬЯ · ФИНАЛЬНЫЙ РОЗЫГРЫШ' : 'ФИНАЛЬНЫЙ РОЗЫГРЫШ'}</small><b>Джекпот банка</b></div><em>{isTieBreaker ? 'В джекпоте только игроки с одинаковым результатом' : 'Шанс зависит от стоимости всех дропов'}</em></div><div className="battle-jackpot-players">{jackpotPlayerIndexes.map((playerIndex) => { const round = rounds[playerIndex]; const percent = Math.max(1, round.total) / jackpotTotal * 100; return <span className={`ticket-${playerIndex % 4} ${jackpotFinished && playerIndex === results.winnerIndex ? 'winner' : ''}`} key={round.player.username}><i>{round.player.avatar || '🐷'}</i><b>{round.player.username}</b><em>{percent.toFixed(0)}%</em></span> })}</div>
       <i className="jackpot-pointer">▼</i><div className="battle-jackpot-reel"><div className="battle-jackpot-rail" style={{ '--jackpot-start': `-${jackpotStart * 76 + 38}px`, '--jackpot-end': `-${jackpotTarget * 76 + 38}px` } as React.CSSProperties}>{jackpotEntries.map((playerIndex, index) => { const round = rounds[playerIndex]; const percent = Math.max(1, round.total) / jackpotTotal * 100; return <span className={`jackpot-ticket ticket-${playerIndex % 4} ${playerIndex === results.winnerIndex ? 'winner-ticket' : ''}`} key={`${playerIndex}-${index}`}><b>{round.player.avatar || '🐷'}</b><small>{percent.toFixed(0)}%</small></span> })}</div></div>{jackpotFinished ? <strong>🏆 {winner.player.username} забирает весь банк · все скины уже в инвентаре</strong> : <small className="battle-jackpot-note">Лента замедляется — стрелка выберет получателя банка</small>}</div>}
-    {stage === 'finale' && battle.mode !== 'JACKPOT' && finale && <div className="battle-winner-banner">🏆 Победитель: <b>{winner.player.username}</b> · весь дроп уже в инвентаре</div>}
+    {stage === 'finale' && !isJackpotFinish && finale && <div className="battle-winner-banner">🏆 Победитель: <b>{winner.player.username}</b> · весь дроп уже в инвентаре</div>}
   </div>
 }
 
@@ -383,7 +386,6 @@ function NavalPage({ token, user, onRequireAuth, onBalance, toast }: { token: st
   const create = async () => { if (!user) return onRequireAuth(); try { const data = await request('/api/naval', token, { method: 'POST', body: JSON.stringify({ stake: Math.round(Number(stake) * 100) }) }); setFleet(emptyFleet()); setSelectedShipId('fleet-0'); setCurrent(data); await onBalance(); load() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось создать игру') } };
   const join = async (id: string) => { if (!user) return onRequireAuth(); try { const data = await request(`/api/naval/${id}/join`, token, { method: 'POST' }); setFleet(emptyFleet()); setSelectedShipId('fleet-0'); setCurrent(data); await onBalance(); load() } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось войти') } };
   const ready = async () => { if (!current) return; if (fleetCells(fleet).length !== 9) return toast('Сначала расставь все 9 клеток короткого флота.'); try { setCurrent(await request(`/api/naval/${current.id}/ships`, token, { method: 'POST', body: JSON.stringify({ ships: fleetCells(fleet) }) })); load() } catch (error) { toast(error instanceof Error ? error.message : 'Проверь расстановку кораблей') } };
-  const addBot = async () => { if (!current) return; try { setCurrent(await request(`/api/naval/${current.id}/bot`, token, { method: 'POST' })); toast('Свинобот готов — расставь свой короткий флот') } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось добавить бота') } };
   const shot = async (x: number, y: number) => { if (!current) return; try { setCurrent(await request(`/api/naval/${current.id}/shot`, token, { method: 'POST', body: JSON.stringify({ x, y }) })); await onBalance(); load() } catch (error) { toast(error instanceof Error ? error.message : 'Выстрел не прошёл') } };
   const moveShip = (id: string, x: number, y: number) => setFleet((currentFleet) => { const ship = currentFleet.find((entry) => entry.id === id); if (!ship) return currentFleet; const candidate = { ...ship, x, y }; return canPlaceShip(currentFleet, candidate) ? currentFleet.map((entry) => entry.id === id ? candidate : entry) : currentFleet });
   const placeSelected = (x: number, y: number) => { const ship = fleet.find((entry) => entry.id === selectedShipId); if (!ship) return; if (!canPlaceShip(fleet, { ...ship, x, y })) return toast('Сюда нельзя: корабли не должны касаться друг друга и края за пределами поля.'); moveShip(selectedShipId, x, y) };
@@ -395,9 +397,9 @@ function NavalPage({ token, user, onRequireAuth, onBalance, toast }: { token: st
       <section className="naval-create"><h2>Создать игру</h2><label>Ставка, SC<input type="number" min="100" max="500000" value={stake} onChange={(event) => setStake(event.target.value)}/></label><small>Минимум 100 · максимум 500 000 SC. Победитель получает ×2.</small><button className="pig-button" onClick={create}>Создать стол →</button></section>
       <section className="naval-rooms"><h2>Открытые столы</h2>{savedGameId && <button className="pig-button naval-return" onClick={resume}>↩ Вернуться в свою игру</button>}{games.length ? games.map((game) => <article key={game.id}><span>⚓</span><div><b>{game.players?.[0]?.user?.username || 'Свинка'}</b><small>Ставка {coins(game.stake)} SC · ожидание соперника</small></div><button className="login" onClick={() => join(game.id)}>Войти</button></article>) : <div className="empty-feed">Свободных столов пока нет.</div>}</section>
     </div> : <section className="naval-game">
-      <div className="naval-status"><b>{current.status === 'WAITING' ? 'Ждём соперника…' : current.status === 'SETUP' ? 'Расставьте короткий флот' : current.status === 'FINISHED' ? current.winnerUserId === user?.id ? 'ПОБЕДА · банк зачислен!' : 'Игра завершена' : current.turnUserId === user?.id ? `Твой ход · ${secondsLeft} сек.` : current.opponent?.bot && current.turnUserId === null ? `Свинобот думает · ${secondsLeft} сек.` : `Ход соперника · ${secondsLeft} сек.`}</b><span>Банк: {coins(current.stake * 2)} SC</span><button className="login" onClick={() => setCurrent(null)}>К столам</button></div>
+      <div className="naval-status"><b>{current.status === 'WAITING' ? 'Ждём соперника…' : current.status === 'SETUP' ? 'Расставьте короткий флот' : current.status === 'FINISHED' ? current.winnerUserId === user?.id ? 'ПОБЕДА · банк зачислен!' : 'Игра завершена' : current.turnUserId === user?.id ? `Твой ход · ${secondsLeft} сек.` : `Ход соперника · ${secondsLeft} сек.`}</b><span>Банк: {coins(current.stake * 2)} SC</span><button className="login" onClick={() => setCurrent(null)}>К столам</button></div>
       {current.status === 'FINISHED' && <div className={`naval-finish-modal ${current.winnerUserId === user?.id ? 'victory' : 'defeat'}`}><span>{current.winnerUserId === user?.id ? '🏆' : '⚓'}</span><p className="eyebrow">МОРСКОЙ БОЙ ЗАВЕРШЁН</p><h2>{current.winnerUserId === user?.id ? 'Победа!' : 'Бой завершён'}</h2><p>{current.winnerUserId === user?.id ? `Ты уничтожил весь флот и забрал ${coins(current.stake * 2)} SC.` : 'Все корабли уничтожены. В следующий раз свинки возьмут реванш!'}</p><button className="pig-button" onClick={() => setCurrent(null)}>К столам →</button></div>}
-      {current.status === 'WAITING' ? <div className="empty-feed">Поделись столом — второй игрок появится здесь автоматически.<br/><button className="pig-button" onClick={addBot}>🤖 Сыграть со Свиноботом</button></div> : <div className="naval-fields">
+      {current.status === 'WAITING' ? <div className="empty-feed">Поделись столом — второй игрок появится здесь автоматически.</div> : <div className="naval-fields">
         <div><h3>Твой флот</h3>
           <NavalBoard ships={current.mine.ready ? current.mine.ships : fleetCells(fleet)} shots={current.mine.shots} disabled={current.mine.ready || current.status !== 'SETUP'} placementHints={placementHints} onCell={placeSelected} onDropCell={(x, y, shipId) => { setSelectedShipId(shipId); moveShip(shipId, x, y) }}/>
           {!current.mine.ready && <>
