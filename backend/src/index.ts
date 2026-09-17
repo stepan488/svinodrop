@@ -1,3 +1,6 @@
+// Prisma returns BIGINT for balances. The virtual economy stays well inside
+// JavaScript's safe-number range, so API clients receive ordinary numbers.
+;(BigInt.prototype as unknown as { toJSON?: () => number }).toJSON ??= function () { return Number(this) }
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import http from 'node:http';
@@ -9,6 +12,21 @@ import { PrismaClient } from '@prisma/client';
 import { Server } from 'socket.io';
 
 const prisma = new PrismaClient();
+const wideMoney = (value: number | bigint) => typeof value === 'bigint' ? value : BigInt(Math.trunc(value));
+const normalizeWideMoney = (data: Record<string, unknown> | undefined, field: 'balance' | 'amount') => {
+  if (!data || data[field] === undefined) return;
+  const value = data[field];
+  if (typeof value === 'number') { data[field] = wideMoney(value); return; }
+  if (value && typeof value === 'object') {
+    const operation = value as Record<string, unknown>;
+    for (const key of ['increment', 'decrement', 'set']) if (typeof operation[key] === 'number') operation[key] = wideMoney(operation[key] as number);
+  }
+};
+prisma.$use(async (params, next) => {
+  if (params.model === 'User') normalizeWideMoney(params.args?.data as Record<string, unknown> | undefined, 'balance');
+  if (params.model === 'Transaction') normalizeWideMoney(params.args?.data as Record<string, unknown> | undefined, 'amount');
+  return next(params);
+});
 const app = express();
 const server = http.createServer(app);
 const allowedOrigins = (process.env.CLIENT_URLS || process.env.CLIENT_URL || 'http://localhost:5173').split(',').map((value) => value.trim()).filter(Boolean);
@@ -26,7 +44,7 @@ const attempts = new Map<string, { count: number; reset: number }>();
 
 type Session = { id: string; email: string; role: string };
 type AuthedRequest = Request & { session?: Session };
-const itemSelect = { id: true, name: true, wear: true, price: true, image: true, rarity: true, active: true } as const;
+const itemSelect = { id: true, name: true, wear: true, price: true, image: true, rarity: true, active: true, upgradeEligible: true } as const;
 
 function secret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
@@ -51,8 +69,8 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   if (current.count > 90) return res.status(429).json({ error: 'Слишком много запросов. Попробуйте через минуту.' });
   next();
 }
-function publicUser(user: { id: string; username: string; email: string; avatar: string | null; nickColor: string; balance: number; role: string; createdAt: Date }) {
-  return { id: user.id, username: user.username, email: user.email, avatar: user.avatar, nickColor: user.nickColor, balance: user.balance, role: user.role, createdAt: user.createdAt };
+function publicUser(user: { id: string; username: string; email: string; avatar: string | null; nickColor: string; balance: number | bigint; role: string; createdAt: Date }) {
+  return { id: user.id, username: user.username, email: user.email, avatar: user.avatar, nickColor: user.nickColor, balance: Number(user.balance), role: user.role, createdAt: user.createdAt };
 }
 function pickWeighted<T extends { weight: number }>(list: T[]): T {
   const sum = list.reduce((n, item) => n + item.weight, 0);
@@ -390,7 +408,8 @@ app.get('/api/leaderboard', async (_req, res) => {
     .filter((user) => !automatedName.test(user.username) || /^(bigpig|doorfrus|doofrus)$/i.test(user.username))
     .map((user) => {
       const inventoryValue = user.inventory.reduce((sum, entry) => sum + entry.item.price, 0);
-      return { id: user.id, username: user.username, avatar: user.avatar, balance: user.balance, inventoryValue, skins: user.inventory.length, total: user.balance + inventoryValue };
+      const balance = Number(user.balance);
+      return { id: user.id, username: user.username, avatar: user.avatar, balance, inventoryValue, skins: user.inventory.length, total: balance + inventoryValue };
     })
     .sort((left, right) => right.total - left.total || right.inventoryValue - left.inventoryValue || left.username.localeCompare(right.username))
     .slice(0, 100)
@@ -608,7 +627,7 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
         const inventory = await tx.inventory.create({ data: { userId: user.id, itemId: winner.itemId, dropId: drop.id, obtainedFrom: `case:${caseData.slug}`, revealed: true } });
         drops.push({ dropId: drop.id, inventoryId: inventory.id, item: winner.item! });
       }
-      const response = { balance: user.balance - total + magicBalanceReward, caseName: caseData.name, drops, balanceReward: magicBalanceReward, openingStyle: caseData.openingStyle };
+      const response = { balance: Number(user.balance) - total + magicBalanceReward, caseName: caseData.name, drops, balanceReward: magicBalanceReward, openingStyle: caseData.openingStyle };
       await tx.opening.create({ data: { userId: user.id, key: requestKey, response } });
       return response;
     }, { isolationLevel: 'Serializable' });
@@ -631,7 +650,7 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
   try {
     const outcome = await prisma.$transaction(async (tx) => {
       const sources = await tx.inventory.findMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: true } });
-      const target = await tx.item.findFirst({ where: { id: targetItemId, active: true } });
+      const target = await tx.item.findFirst({ where: { id: targetItemId, active: true, upgradeEligible: true } });
       if (sources.length !== sourceInventoryIds.length || !target) throw new Error('Один из предметов больше недоступен');
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       if (balanceStake > user.balance) throw new Error('На балансе недостаточно свинокоинов для ставки.');
@@ -658,7 +677,7 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
         ? await tx.user.update({ where: { id: user.id }, data: { balance: { increment: compensation } } })
         : null;
       if (compensation) await tx.transaction.create({ data: { userId: user.id, type: 'UPGRADE_COMPENSATION', amount: compensation, description: `Компенсация 5% за неудачный апгрейд «${target.name}»` } });
-      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: compensatedUser?.balance ?? user.balance - balanceStake, balanceStake, compensation };
+      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: compensatedUser ? Number(compensatedUser.balance) : Number(user.balance) - balanceStake, balanceStake, compensation };
     }, { isolationLevel: 'Serializable' });
     res.json(outcome);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Апгрейд не выполнен' }); }
@@ -939,7 +958,7 @@ app.post('/api/crash/bet', auth, async (req: AuthedRequest, res) => {
       const bet: CrashBet = { version: 1, roundId: round.id, status: 'BET', stake, balanceStake, skinStake, skinIds: skinInventoryIds, createdAt: new Date().toISOString() };
       await tx.opening.create({ data: { userId: user.id, key: crashBetKey(round.id), response: bet } });
       await tx.transaction.create({ data: { userId: user.id, type: 'CRASH_BET', amount: -balanceStake, description: `Ставка в «Свинокраш» · ${Math.floor(skinStake / 100)} SC скинами` } });
-      return { bet, balance: user.balance - balanceStake };
+      return { bet, balance: Number(user.balance) - balanceStake };
     }, { isolationLevel: 'Serializable' });
     res.status(201).json({ ...result, round: publicCrashRound(round) });
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось поставить в краше.' }); }
@@ -1252,10 +1271,10 @@ app.post('/api/admin/giveaways', auth, admin, async (req: AuthedRequest, res) =>
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать розыгрыш.' }); }
 });
 app.get('/api/admin/items', auth, admin, async (_req, res) => res.json(await prisma.item.findMany({ select: itemSelect, orderBy: [{ active: 'desc' }, { price: 'asc' }] })));
-app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); try { const item = await prisma.$transaction(async (tx) => { const created = await tx.item.create({ data: { id, name, wear, price, image, rarity } }); const cases = await tx.case.findMany({ where: { active: true }, select: { id: true } }); await tx.caseItem.createMany({ data: cases.map((caseData) => ({ caseId: caseData.id, itemId: created.id, weight: Math.max(1, Math.round(100_000 / Math.max(1, created.price / 100))) })), skipDuplicates: true }); return created; }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE_AND_INJECT', metadata: { itemId: item.id } } }); res.status(201).json(item); } catch { res.status(409).json({ error: 'Предмет с таким ID уже существует.' }); } });
+app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity, upgradeEligible = true } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || typeof upgradeEligible !== 'boolean' || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); try { const item = await prisma.$transaction(async (tx) => { const created = await tx.item.create({ data: { id, name, wear, price, image, rarity, upgradeEligible } }); const cases = await tx.case.findMany({ where: { active: true }, select: { id: true } }); await tx.caseItem.createMany({ data: cases.map((caseData) => ({ caseId: caseData.id, itemId: created.id, weight: Math.max(1, Math.round(100_000 / Math.max(1, created.price / 100))) })), skipDuplicates: true }); return created; }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE_AND_INJECT', metadata: { itemId: item.id, upgradeEligible } } }); res.status(201).json(item); } catch { res.status(409).json({ error: 'Предмет с таким ID уже существует.' }); } });
 app.get('/api/admin/site-settings', auth, admin, async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
 app.put('/api/admin/site-settings', auth, admin, async (req: AuthedRequest, res) => { const collectionTitle = String(req.body?.collectionTitle || '').trim(); if (!collectionTitle || collectionTitle.length > 64) return res.status(400).json({ error: 'Название должно быть от 1 до 64 символов.' }); await prisma.siteSetting.upsert({ where: { key: 'collectionTitle' }, create: { key: 'collectionTitle', value: collectionTitle }, update: { value: collectionTitle } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'COLLECTION_TITLE_UPDATE', metadata: { collectionTitle } } }); res.json({ collectionTitle }); });
-app.patch('/api/admin/items/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, wear, price, image, rarity, active } = req.body ?? {}; const item = await prisma.item.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(typeof wear === 'string' ? { wear } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof rarity === 'string' ? { rarity } : {}), ...(typeof active === 'boolean' ? { active } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_UPDATE', metadata: { itemId: item.id } } }); res.json(item); });
+app.patch('/api/admin/items/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, wear, price, image, rarity, active, upgradeEligible } = req.body ?? {}; const item = await prisma.item.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(typeof wear === 'string' ? { wear } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof rarity === 'string' ? { rarity } : {}), ...(typeof active === 'boolean' ? { active } : {}), ...(typeof upgradeEligible === 'boolean' ? { upgradeEligible } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_UPDATE', metadata: { itemId: item.id, upgradeEligible: typeof upgradeEligible === 'boolean' ? upgradeEligible : undefined } } }); res.json(item); });
 app.get('/api/admin/cases', auth, admin, async (_req, res) => res.json(await prisma.case.findMany({ include: { items: { include: { item: { select: itemSelect } } } } })));
 app.post('/api/admin/cases', auth, admin, async (req: AuthedRequest, res) => {
   const { name, slug, price, image, collection, items } = req.body ?? {};

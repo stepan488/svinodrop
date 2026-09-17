@@ -36,6 +36,7 @@ export const BASE_MARKET_ITEMS = [
   { id: '30', name: 'M4A4 | Вой', wear: 'MW', price: 51351230, rarity: 'CONTRABAND', image: 'https://cdn2.csgo.com/item/image/width=916/M4A4%20%7C%20Howl%20(Minimal%20Wear).webp' },
   { id: '31', name: 'AWP | История о драконе', wear: 'FT', price: 60000230, rarity: 'CONTRABAND', image: 'https://cdn2.csgo.com/item/image/width=916/AWP%20%7C%20Dragon%20Lore%20(Field-Tested).webp' },
   { id: '32', name: 'Sticker | Titan (Holo) | Katowice 2014', wear: 'Holo', price: 740000000, rarity: 'CONTRABAND', image: 'https://cdn.tradeit.gg/csgo%2FSticker%20-%20Titan%20(Holo)%20-%20Katowice%202014_240x152.webp' },
+  { id: '33', name: 'Наклейка | Vox Eminor (голографическая) | Катовице-2014', wear: 'Holo', price: 275620000, rarity: 'CONTRABAND', image: 'https://imageproxy.waxpeer.com/insecure/rs:fit:552:385:0/g:nowe/f:webp/plain/https://images.waxpeer.com/i/730-sticker-vox-eminor-holo-katowice-2014.webp' },
 ] as const
 
 export const MARKET_ITEMS = BASE_MARKET_ITEMS
@@ -97,14 +98,14 @@ async function main() {
   for (const item of MARKET_ITEMS) {
     await prisma.item.upsert({
       where: { id: item.id },
-      update: { name: item.name, wear: item.wear, price: item.price, image: item.image, rarity: item.rarity, active: true },
-      create: { ...item, active: true },
+      update: { name: item.name, wear: item.wear, price: item.price, image: item.image, rarity: item.rarity, active: true, isCustom: false },
+      create: { ...item, active: true, isCustom: false },
     })
   }
 
-  // Keep legacy records for historic inventories, but never show or drop them again.
-  await prisma.item.updateMany({ where: { id: { notIn: MARKET_ITEMS.map((item) => item.id) } }, data: { active: false } })
-  await prisma.inventory.updateMany({ where: { itemId: { notIn: MARKET_ITEMS.map((item) => item.id) }, removedAt: null }, data: { removedAt: new Date() } })
+  // Owner-created skins are permanent catalogue entries: do not hide them on
+  // a deploy. This also restores earlier custom skins to upgrades and cases.
+  await prisma.item.updateMany({ where: { id: { notIn: MARKET_ITEMS.map((item) => item.id) } }, data: { active: true, isCustom: true, upgradeEligible: true } })
 
   for (const config of CASES) {
     const magic = 'openingStyle' in config && config.openingStyle === 'MAGIC'

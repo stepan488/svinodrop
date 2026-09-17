@@ -14,7 +14,7 @@ model User {
   passwordHash String
   avatar String?
   nickColor String @default("#ffffff")
-  balance Int @default(0)
+  balance BigInt @default(0)
   role String @default("USER")
   isBanned Boolean @default(false)
   muteUntil DateTime?
@@ -46,6 +46,8 @@ model Item {
   image String
   rarity String
   active Boolean @default(true)
+  upgradeEligible Boolean @default(true)
+  isCustom Boolean @default(false)
   caseItems CaseItem[]
   inventory Inventory[]
   targetDrops Drop[] @relation("DropItem")
@@ -98,7 +100,7 @@ model Transaction {
   id String @id @default(uuid())
   userId String
   type String
-  amount Int
+  amount BigInt
   description String
   createdAt DateTime @default(now())
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
