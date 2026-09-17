@@ -347,7 +347,10 @@ async function settlePendingRewards(userId: string) {
   // A case/upgrade result is already decided inside its DB transaction. If a
   // player refreshes mid-animation, reveal every protected prize on login.
   await prisma.$transaction([
-    prisma.inventory.updateMany({ where: { userId, revealed: false, removedAt: null }, data: { revealed: true } }),
+    // Contract prizes deliberately stay hidden until the result card is
+    // accepted or scratched by the player. Only interrupted case/upgrade
+    // animations are recovered automatically.
+    prisma.inventory.updateMany({ where: { userId, revealed: false, removedAt: null, OR: [{ dropId: { not: null } }, { upgradeId: { not: null } }] }, data: { revealed: true } }),
     prisma.upgrade.updateMany({ where: { userId, result: true, revealed: false }, data: { revealed: true } }),
   ]);
 }
@@ -756,11 +759,16 @@ app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
 
 function contractMultiplier() {
   const roll = crypto.randomInt(10_000);
-  if (roll < 4_700) return 0.10 + crypto.randomInt(46) / 100;
-  if (roll < 7_800) return 0.56 + crypto.randomInt(45) / 100;
-  if (roll < 9_400) return 1.01 + crypto.randomInt(100) / 100;
-  if (roll < 9_900) return 2.01 + crypto.randomInt(300) / 100;
-  return 5.01 + crypto.randomInt(500) / 100;
+  if (roll < 4_200) return 0.12 + crypto.randomInt(53) / 100;
+  if (roll < 7_400) return 0.65 + crypto.randomInt(44) / 100;
+  if (roll < 9_400) return 1.09 + crypto.randomInt(102) / 100;
+  if (roll < 9_900) return 2.11 + crypto.randomInt(265) / 100;
+  return 4.76 + crypto.randomInt(525) / 100;
+}
+const contractPendingKey = 'contract-pending-v1';
+type ContractPending = { version: 1; inventoryId: string; stake: number; multiplier: number; riskMode: boolean };
+function isContractPending(value: unknown): value is ContractPending {
+  return Boolean(value && typeof value === 'object' && (value as ContractPending).version === 1 && typeof (value as ContractPending).inventoryId === 'string');
 }
 function contractWinner(items: EconomyItem[], stake: number) {
   const target = Math.max(1, Math.round(stake * contractMultiplier()));
@@ -770,9 +778,16 @@ function contractWinner(items: EconomyItem[], stake: number) {
 }
 app.post('/api/contracts', auth, async (req: AuthedRequest, res) => {
   const sourceInventoryIds = req.body?.sourceInventoryIds;
+  const riskMode = Boolean(req.body?.riskMode);
   if (!Array.isArray(sourceInventoryIds) || sourceInventoryIds.length < 3 || sourceInventoryIds.length > 10 || new Set(sourceInventoryIds).size !== sourceInventoryIds.length || sourceInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Выбери от 3 до 10 разных скинов для контракта.' });
   try {
     const result = await prisma.$transaction(async (tx) => {
+      const pending = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: contractPendingKey } } });
+      if (pending && isContractPending(pending.response)) {
+        const pendingInventory = await tx.inventory.findFirst({ where: { id: pending.response.inventoryId, userId: req.session!.id, removedAt: null, revealed: false } });
+        if (pendingInventory) throw new Error('Сначала открой результат предыдущего контракта.');
+        await tx.opening.delete({ where: { id: pending.id } });
+      }
       const sources = await tx.inventory.findMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: { select: itemSelect } } });
       if (sources.length !== sourceInventoryIds.length) throw new Error('Один из скинов уже недоступен. Обнови инвентарь.');
       const stake = sources.reduce((sum, source) => sum + source.item.price, 0);
@@ -781,12 +796,33 @@ app.post('/api/contracts', auth, async (req: AuthedRequest, res) => {
       const winner = contractWinner(candidates, stake);
       const marked = await tx.inventory.updateMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
       if (marked.count !== sources.length) throw new Error('Инвентарь изменился во время контракта.');
-      const inventory = await tx.inventory.create({ data: { userId: req.session!.id, itemId: winner.id, obtainedFrom: 'contract', revealed: true } });
+      const inventory = await tx.inventory.create({ data: { userId: req.session!.id, itemId: winner.id, obtainedFrom: 'contract', revealed: false } });
+      await tx.opening.upsert({ where: { userId_key: { userId: req.session!.id, key: contractPendingKey } }, create: { userId: req.session!.id, key: contractPendingKey, response: { version: 1, inventoryId: inventory.id, stake, multiplier: winner.price / stake, riskMode } }, update: { response: { version: 1, inventoryId: inventory.id, stake, multiplier: winner.price / stake, riskMode } } });
       await tx.transaction.create({ data: { userId: req.session!.id, type: 'CONTRACT', amount: 0, description: `Контракт из ${sources.length} скинов: ${stake} → ${winner.price}` } });
-      return { inventoryId: inventory.id, item: winner, stake, multiplier: winner.price / stake };
+      return { inventoryId: inventory.id, item: winner, stake, multiplier: winner.price / stake, riskMode };
     }, { isolationLevel: 'Serializable' });
     res.status(201).json(result);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Контракт не выполнен.' }); }
+});
+app.get('/api/contracts/pending', auth, async (req: AuthedRequest, res) => {
+  const pending = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: contractPendingKey } } });
+  if (!pending || !isContractPending(pending.response)) return res.json({ result: null });
+  const inventory = await prisma.inventory.findFirst({ where: { id: pending.response.inventoryId, userId: req.session!.id, removedAt: null, revealed: false }, include: { item: { select: itemSelect } } });
+  if (!inventory) return res.json({ result: null });
+  res.json({ result: { inventoryId: inventory.id, item: inventory.item, stake: pending.response.stake, multiplier: pending.response.multiplier, riskMode: pending.response.riskMode } });
+});
+app.post('/api/contracts/reveal', auth, async (req: AuthedRequest, res) => {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const pending = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: contractPendingKey } } });
+      if (!pending || !isContractPending(pending.response)) throw new Error('Скрытый контракт не найден.');
+      const inventory = await tx.inventory.updateMany({ where: { id: pending.response.inventoryId, userId: req.session!.id, removedAt: null, revealed: false }, data: { revealed: true } });
+      if (!inventory.count) throw new Error('Предмет уже раскрыт.');
+      await tx.opening.delete({ where: { id: pending.id } });
+      return { inventoryId: pending.response.inventoryId };
+    }, { isolationLevel: 'Serializable' });
+    res.json(result);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось раскрыть контракт.' }); }
 });
 
 type CrashPhase = 'BETTING' | 'RUNNING' | 'CRASHED';

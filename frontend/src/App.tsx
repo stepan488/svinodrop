@@ -328,6 +328,36 @@ function MinesPage({ token, user, onRequireAuth, onBalance, toast }: { token: st
   return <section className="page compact-page mines-page"><header className="mines-hero"><div><p className="eyebrow">PIGGY MINES · ИГРА НА ОСТОРОЖНОСТЬ</p><h1>Свиные <strong>мины</strong></h1><p>Открывай клетки с поросятами, обходи бомбы и забирай выигрыш в любой момент.</p></div><button className="mines-rules" onClick={() => setRulesOpen((open) => !open)}>Как играть? <b>{rulesOpen ? '⌃' : '⌄'}</b></button></header>{rulesOpen && <div className="mines-rules-copy"><b>🐷 Поросёнок повышает множитель, 💣 бомба забирает ставку.</b><span>Чем больше мин на поле, тем выше награда. Очистишь все безопасные клетки — приз зачислится автоматически.</span></div>}<div className="mines-layout"><section className="mines-stage"><div className="mines-stage-head"><div><span>🐽</span><b>{playing ? `ХОД ${game.opened.length + 1}` : 'ГОТОВ К РИСКУ'}</b></div><div><small>{playing ? 'ТЕКУЩИЙ МНОЖИТЕЛЬ' : 'ПЕРВЫЙ МНОЖИТЕЛЬ'}</small><strong>{multiplier(playing ? game.multiplier : 1)}</strong></div></div><div className="mines-grid">{Array.from({ length: 25 }, (_, cell) => { const opened = Boolean(game?.opened.includes(cell)); const mine = opened && Boolean(game?.mines?.includes(cell)); return <button key={cell} disabled={!playing || opened || busy} onClick={() => openCell(cell)} className={`mines-cell ${opened ? (mine ? 'mine' : 'safe') : ''}`}>{opened ? (mine ? '💣' : '🐷') : <span>🐽</span>}</button> })}</div>{playing && <div className="mines-progress"><span>Безопасных открыто: <b>{game.opened.length}/{game.safeTotal}</b></span><span>Следующий шанс: <b>{nextMultiplier ? multiplier(nextMultiplier) : 'финал'}</b></span></div>}{game && !playing && <div className={`mines-result ${game.status.toLowerCase()}`}><span>{game.status === 'LOST' ? '💣' : '🏆'}</span><div><b>{game.status === 'LOST' ? 'Мина поймала свинку' : game.status === 'WON' ? 'Поле полностью очищено!' : 'Выигрыш забран!'}</b><small>{game.status === 'LOST' ? 'В этот раз ставка сгорела. Попробуешь снова?' : `${multiplier(game.multiplier)} · ${coins(game.payout)} SC уже на балансе`}</small></div><button onClick={reset}>Новая игра →</button></div>}</section><aside className="mines-controls"><p className="eyebrow">СВИНОСТАВКА</p><h2>Настрой поле</h2><label>Ставка, SC<input type="number" min="100" max="100000" disabled={playing} value={stake} onChange={(event) => setStake(event.target.value)}/></label><div className="mines-quick"><button disabled={playing} onClick={() => setStake('100')}>MIN</button><button disabled={playing} onClick={() => setStake(String(Math.min(100000, Math.max(100, Math.floor((user?.balance || 0) / 200))))) }>50%</button><button disabled={playing} onClick={() => setStake(String(Math.min(100000, Math.floor((user?.balance || 0) / 100))))}>MAX</button></div><div className="mine-count"><span>💣 Количество мин</span><div>{([3, 6, 9] as const).map((count) => <button disabled={playing} className={mineCount === count ? 'chosen' : ''} key={count} onClick={() => setMineCount(count)}>{count}</button>)}</div><small>{25 - mineCount} безопасных клеток · первый ход {multiplier(minesMultiplierTable[mineCount][0])}</small></div><div className="mines-summary"><span>Баланс <b>{coins(user?.balance || 0)} SC</b></span><span>{playing ? `Можно забрать ${coins(game.payout)} SC` : `Ставка ${new Intl.NumberFormat('ru-RU').format(stakeCoins || 0)} SC`}</span></div>{playing ? <button className="pig-button mines-action cashout" disabled={busy || !game.opened.length} onClick={cashout}>{game.opened.length ? `ЗАБРАТЬ ${coins(game.payout)} SC →` : 'ОТКРОЙ ПЕРВУЮ КЛЕТКУ'}</button> : <button className="pig-button mines-action" disabled={busy} onClick={start}>{busy ? 'ЗАРЯЖАЕМ ПОЛЕ…' : 'НАЧАТЬ ИГРУ →'}</button>}<div className="mines-ladder"><small>МНОЖИТЕЛИ В ЭТОЙ ИГРЕ</small><div>{table.slice(0, 7).map((value, index) => <span className={playing && game.opened.length === index + 1 ? 'current' : ''} key={value}>{multiplier(value)}</span>)}<i>…</i><span>{multiplier(table[table.length - 1])}</span></div></div></aside></div></section>
 }
 
+function ScratchReveal({ onComplete }: { onComplete: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const marks = useRef(new Set<number>())
+  const done = useRef(false)
+  const [progress, setProgress] = useState(0)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const paint = () => {
+      const rect = canvas.getBoundingClientRect(); const ratio = window.devicePixelRatio || 1
+      canvas.width = Math.round(rect.width * ratio); canvas.height = Math.round(rect.height * ratio)
+      const context = canvas.getContext('2d'); if (!context) return
+      context.scale(ratio, ratio); context.fillStyle = '#09070d'; context.fillRect(0, 0, rect.width, rect.height)
+      context.strokeStyle = '#5a3a62'; context.lineWidth = 2; context.strokeRect(1, 1, rect.width - 2, rect.height - 2)
+      context.fillStyle = '#ffe1f1'; context.font = '900 64px sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText('?', rect.width / 2, rect.height / 2)
+    }
+    paint(); window.addEventListener('resize', paint); return () => window.removeEventListener('resize', paint)
+  }, [])
+  const erase = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (done.current) return
+    const canvas = canvasRef.current; const context = canvas?.getContext('2d'); if (!canvas || !context) return
+    const rect = canvas.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top
+    context.globalCompositeOperation = 'destination-out'; context.beginPath(); context.arc(x, y, 25, 0, Math.PI * 2); context.fill()
+    const col = Math.min(9, Math.max(0, Math.floor(x / rect.width * 10))); const row = Math.min(9, Math.max(0, Math.floor(y / rect.height * 10))); marks.current.add(row * 10 + col)
+    const next = marks.current.size; setProgress(next)
+    if (next >= 60) { done.current = true; context.clearRect(0, 0, canvas.width, canvas.height); onComplete() }
+  }
+  return <div className="contract-scratch"><canvas ref={canvasRef} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); erase(event) }} onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) erase(event) }}/><small>Сотри покрытие: {Math.min(60, progress)}% / 60%</small></div>
+}
+
 function ContractPage({ token, user, inventory, onRequireAuth, onBalance, toast }: { token: string; user: User | null; inventory: Inventory[]; onRequireAuth: () => void; onBalance: () => Promise<void>; toast: (text: string) => void }) {
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
@@ -335,29 +365,33 @@ function ContractPage({ token, user, inventory, onRequireAuth, onBalance, toast 
   const [phase, setPhase] = useState<'idle' | 'mixing' | 'result'>('idle')
   const [sellingResult, setSellingResult] = useState(false)
   const [mixingItems, setMixingItems] = useState<Inventory[]>([])
+  const [riskMode, setRiskMode] = useState(false)
+  const [scratchDone, setScratchDone] = useState(false)
   const selectedItems = inventory.filter((entry) => selected.includes(entry.id))
   const shownItems = phase === 'mixing' ? mixingItems : selectedItems
   const stake = selectedItems.reduce((sum, entry) => sum + entry.item.price, 0)
   const toggle = (id: string) => setSelected((items) => items.includes(id) ? items.filter((item) => item !== id) : items.length < 10 ? [...items, id] : items)
+  useEffect(() => { if (!token) return; request('/api/contracts/pending', token).then((data) => { if (data.result) { setResult(data.result); setRiskMode(Boolean(data.result.riskMode)); setScratchDone(!data.result.riskMode); setPhase('result') } }).catch(() => undefined) }, [token])
   const create = async () => {
     if (!user) return onRequireAuth()
     if (selected.length < 3) return toast('Для контракта нужно минимум 3 скина.')
     setBusy(true)
     try {
-      const data = await request('/api/contracts', token, { method: 'POST', body: JSON.stringify({ sourceInventoryIds: selected }) })
-      setResult(data); setMixingItems(selectedItems); setSelected([]); setPhase('mixing'); await onBalance(); window.setTimeout(() => setPhase('result'), 2400)
+      const data = await request('/api/contracts', token, { method: 'POST', body: JSON.stringify({ sourceInventoryIds: selected, riskMode }) })
+      setResult(data); setScratchDone(!riskMode); setMixingItems(selectedItems); setSelected([]); setPhase('mixing'); await onBalance(); window.setTimeout(() => setPhase('result'), 2400)
     } catch (error) { toast(error instanceof Error ? error.message : 'Контракт не выполнен') } finally { setBusy(false) }
   }
-  const keepResult = () => { setMixingItems([]); setPhase('idle'); setResult(null); toast('Предмет оставлен в инвентаре.') }
+  const keepResult = async () => { try { await request('/api/contracts/reveal', token, { method: 'POST' }); await onBalance(); setMixingItems([]); setPhase('idle'); setResult(null); toast('Предмет оставлен в инвентаре.') } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось раскрыть предмет') } }
   const sellResult = async () => {
     if (!result) return
     setSellingResult(true)
     try {
+      await request('/api/contracts/reveal', token, { method: 'POST' })
       const data = await request(`/api/inventory/${result.inventoryId}/sell`, token, { method: 'POST' })
       await onBalance(); setMixingItems([]); setPhase('idle'); setResult(null); toast(`Предмет продан за ${coins(data.payout)} SC.`)
     } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось продать предмет') } finally { setSellingResult(false) }
   }
-  return <section className="page compact-page contract-page"><header className="contract-hero"><div><p className="eyebrow">PIGGY CONTRACT · SERVER VERIFIED</p><h1>Свинский <strong>контракт</strong></h1><p>Положи от 3 до 10 скинов. Итоговый предмет стоит от 10% до 1000% общей суммы — большой окуп редкий, но реальный.</p></div><span>📜</span></header><div className="contract-layout"><section className={`contract-workbench ${phase === 'mixing' ? 'mixing' : ''}`}><div className="contract-slots">{Array.from({ length: 10 }, (_, index) => { const entry = shownItems[index]; return <div className={entry ? 'filled' : ''} key={index}>{entry ? <><img src={entry.item.image} alt=""/><button disabled={phase !== 'idle'} onClick={() => toggle(entry.id)}>×</button><small>{coins(entry.item.price)} SC</small></> : <span>🐽</span>}</div> })}</div>{phase === 'mixing' && <div className="contract-mixer"><i>✦</i><span>🐷</span><b>СВИНЬИ МЕШАЮТ КОНТРАКТ…</b><em>Печать уже на сервере</em></div>}<div className="contract-total"><span>ОБЩАЯ СТОИМОСТЬ</span><b>{coins(phase === 'mixing' && result ? result.stake : stake)} <small>SC</small></b><em>{phase === 'mixing' ? `${mixingItems.length}/10 скинов` : `${selected.length}/10 скинов`}</em></div><button className="pig-button contract-action" disabled={busy || phase !== 'idle' || selected.length < 3} onClick={create}>{busy || phase === 'mixing' ? 'СВИНЬИ ПОДПИСЫВАЮТ…' : selected.length < 3 ? `ДОБАВЬ ЕЩЁ ${3 - selected.length} СКИНА` : `СОЗДАТЬ КОНТРАКТ · ${coins(stake)} SC →`}</button></section><aside className="contract-inventory"><div><p className="eyebrow">ТВОЙ ИНВЕНТАРЬ</p><h2>Выбери скины</h2><small>Кликни по предмету. Можно собрать до 10 ячеек.</small></div><div className="contract-items">{inventory.length ? inventory.map((entry) => <SkinCard key={entry.id} skin={entry.item} selected={selected.includes(entry.id)} onClick={() => phase === 'idle' && toggle(entry.id)}/>) : <p>Открой кейсы — и предметы появятся здесь.</p>}</div></aside></div>{result && phase === 'result' && <div className="modal-backdrop contract-prize-backdrop"><section className="contract-prize-modal"><div className="contract-prize-rays">✦ ✦ ✦</div><p className="eyebrow">КОНТРАКТ РАСКРЫТ</p><h2>Свиньи подписали сделку!</h2><img src={result.item.image} alt={result.item.name}/><b>{result.item.name}</b><em>{result.item.wear} · {coins(result.item.price)} SC · {multiplier(result.multiplier)}</em><p>Предмет уже защищён в инвентаре. Оставить его или продать сразу?</p><div><button className="ghost-button" onClick={keepResult}>Оставить в инвентаре</button><button className="pig-button" disabled={sellingResult} onClick={sellResult}>{sellingResult ? 'ПРОДАЁМ…' : `ПРОДАТЬ ЗА ${coins(result.item.price)} SC →`}</button></div></section></div>}</section>
+  return <section className="page compact-page contract-page"><header className="contract-hero"><div><p className="eyebrow">PIGGY CONTRACT · SERVER VERIFIED</p><h1>Свинский <strong>контракт</strong></h1><p>Положи от 3 до 10 скинов. Итоговый предмет стоит от 10% до 1000% общей суммы — большой окуп редкий, но реальный.</p></div><span>📜</span></header><div className="contract-layout"><section className={`contract-workbench ${phase === 'mixing' ? 'mixing' : ''}`}><div className="contract-slots">{Array.from({ length: 10 }, (_, index) => { const entry = shownItems[index]; return <div className={entry ? 'filled' : ''} key={index}>{entry ? <><img src={entry.item.image} alt=""/><button disabled={phase !== 'idle'} onClick={() => toggle(entry.id)}>×</button><small>{coins(entry.item.price)} SC</small></> : <span>🐽</span>}</div> })}</div>{phase === 'mixing' && <div className="contract-mixer"><i>✦</i><span>🐷</span><b>СВИНЬИ МЕШАЮТ КОНТРАКТ…</b><em>Печать уже на сервере</em></div>}<div className="contract-total"><span>ОБЩАЯ СТОИМОСТЬ</span><b>{coins(phase === 'mixing' && result ? result.stake : stake)} <small>SC</small></b><em>{phase === 'mixing' ? `${mixingItems.length}/10 скинов` : `${selected.length}/10 скинов`}</em></div><button className={`contract-risk-toggle ${riskMode ? 'chosen' : ''}`} disabled={phase !== 'idle'} onClick={() => setRiskMode((value) => !value)}><span>{riskMode ? '✦' : '?'}</span><div><b>Азартный контракт</b><small>{riskMode ? 'Сотри скрытый дроп после смешивания' : 'Включить скрытие награды'}</small></div><i>{riskMode ? 'ВКЛ' : 'ВЫКЛ'}</i></button><button className="pig-button contract-action" disabled={busy || phase !== 'idle' || selected.length < 3} onClick={create}>{busy || phase === 'mixing' ? 'СВИНЬИ ПОДПИСЫВАЮТ…' : selected.length < 3 ? `ДОБАВЬ ЕЩЁ ${3 - selected.length} СКИНА` : `СОЗДАТЬ КОНТРАКТ · ${coins(stake)} SC →`}</button></section><aside className="contract-inventory"><div><p className="eyebrow">ТВОЙ ИНВЕНТАРЬ</p><h2>Выбери скины</h2><small>Кликни по предмету. Можно собрать до 10 ячеек.</small></div><div className="contract-items">{inventory.length ? inventory.map((entry) => <SkinCard key={entry.id} skin={entry.item} selected={selected.includes(entry.id)} onClick={() => phase === 'idle' && toggle(entry.id)}/>) : <p>Открой кейсы — и предметы появятся здесь.</p>}</div></aside></div>{result && phase === 'result' && <div className="modal-backdrop contract-prize-backdrop"><section className="contract-prize-modal"><div className="contract-prize-rays">✦ ✦ ✦</div><p className="eyebrow">{riskMode && !scratchDone ? 'АЗАРТНЫЙ КОНТРАКТ · СОТРИ ПОКРЫТИЕ' : 'КОНТРАКТ РАСКРЫТ'}</p><h2>{riskMode && !scratchDone ? 'Секретный свинодроп' : 'Свиньи подписали сделку!'}</h2><div className="contract-prize-art"><img src={result.item.image} alt=""/>{riskMode && !scratchDone && <ScratchReveal onComplete={() => setScratchDone(true)}/>}</div>{(!riskMode || scratchDone) ? <><b>{result.item.name}</b><em>{result.item.wear} · {coins(result.item.price)} SC · {multiplier(result.multiplier)}</em><p>Предмет скрывался от инвентаря до этого решения.</p><div><button className="ghost-button" onClick={keepResult}>Оставить в инвентаре</button><button className="pig-button" disabled={sellingResult} onClick={sellResult}>{sellingResult ? 'ПРОДАЁМ…' : `ПРОДАТЬ ЗА ${coins(result.item.price)} SC →`}</button></div></> : <p className="scratch-tip">Води мышкой или пальцем по чёрному вопросу. После 60% награда раскроется сама.</p>}</section></div>}</section>
 }
 
 function CrashPage({ token, user, inventory, onRequireAuth, onBalance, toast }: { token: string; user: User | null; inventory: Inventory[]; onRequireAuth: () => void; onBalance: () => Promise<void>; toast: (text: string) => void }) {
@@ -370,6 +404,7 @@ function CrashPage({ token, user, inventory, onRequireAuth, onBalance, toast }: 
   const [rulesOpen, setRulesOpen] = useState(false)
   const [displayMultiplier, setDisplayMultiplier] = useState(1)
   const multiplierRef = useRef(1)
+  const [now, setNow] = useState(() => Date.now())
   const selectedSkins = inventory.filter((entry) => skinIds.includes(entry.id))
   const balanceValue = Math.max(0, Math.floor(Number(balanceStake) || 0)) * 100
   const skinValue = selectedSkins.reduce((sum, entry) => sum + entry.item.price, 0)
@@ -382,6 +417,7 @@ function CrashPage({ token, user, inventory, onRequireAuth, onBalance, toast }: 
     } catch { /* transient polling failure must not wipe an active bet */ }
   }
   useEffect(() => { void reload(); const timer = window.setInterval(() => { void reload() }, 900); return () => window.clearInterval(timer) }, [token])
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 50); return () => window.clearInterval(timer) }, [])
   useEffect(() => {
     const target = round?.phase === 'CRASHED' ? round.crashMultiplier || 1 : round?.currentMultiplier || 1
     const from = multiplierRef.current
@@ -409,7 +445,7 @@ function CrashPage({ token, user, inventory, onRequireAuth, onBalance, toast }: 
     setBusy(true)
     try { const data = await request('/api/crash/cashout', token, { method: 'POST' }); setBet(data.bet); await onBalance(); await reload(); toast(`Забрано ${coins(data.payout)} SC!`) } catch (error) { toast(error instanceof Error ? error.message : 'Не удалось вывести ставку') } finally { setBusy(false) }
   }
-  const seconds = round?.phase === 'BETTING' ? Math.max(0, (new Date(round.bettingEndsAt).getTime() - Date.now()) / 1_000) : 0
+  const seconds = round?.phase === 'BETTING' ? Math.max(0, (new Date(round.bettingEndsAt).getTime() - now) / 1_000) : 0
   const current = displayMultiplier
   const curveY = Math.max(24, 166 - Math.min(130, Math.log(Math.max(current, 1)) * 98))
   const canBet = round?.phase === 'BETTING' && !bet
