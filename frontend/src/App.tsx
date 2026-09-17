@@ -332,7 +332,6 @@ function ScratchReveal({ onComplete }: { onComplete: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const marks = useRef(new Set<number>())
   const done = useRef(false)
-  const [progress, setProgress] = useState(0)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -352,10 +351,10 @@ function ScratchReveal({ onComplete }: { onComplete: () => void }) {
     const rect = canvas.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top
     context.globalCompositeOperation = 'destination-out'; context.beginPath(); context.arc(x, y, 25, 0, Math.PI * 2); context.fill()
     const col = Math.min(9, Math.max(0, Math.floor(x / rect.width * 10))); const row = Math.min(9, Math.max(0, Math.floor(y / rect.height * 10))); marks.current.add(row * 10 + col)
-    const next = marks.current.size; setProgress(next)
+    const next = marks.current.size
     if (next >= 60) { done.current = true; context.clearRect(0, 0, canvas.width, canvas.height); onComplete() }
   }
-  return <div className="contract-scratch"><canvas ref={canvasRef} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); erase(event) }} onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) erase(event) }}/><small>Сотри покрытие: {Math.min(60, progress)}% / 60%</small></div>
+  return <div className="contract-scratch"><canvas ref={canvasRef} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); erase(event) }} onPointerMove={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) erase(event) }}/></div>
 }
 
 function ContractPage({ token, user, inventory, onRequireAuth, onBalance, toast }: { token: string; user: User | null; inventory: Inventory[]; onRequireAuth: () => void; onBalance: () => Promise<void>; toast: (text: string) => void }) {
