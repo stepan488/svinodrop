@@ -92,10 +92,11 @@ const collectionOdds = {
   'От рубля до ножа': { min: 1 / 15, max: 15, target: 0.76 },
   'Свинячий Окуп': { min: 1 / 15, max: 30, target: 0.82 },
   'Свинки Пепы': { min: 1 / 3, max: 3, target: 0.78 },
+  'Ультра Богатый Свинки': { min: 0.10, max: 10, target: 0.76 },
 } as const;
 
 async function rebalanceCollectionOdds() {
-  const version = 'collection-odds-v3';
+  const version = 'collection-odds-v4';
   const marker = await prisma.siteSetting.findUnique({ where: { key: 'drop-economy-version' } });
   if (marker?.value === version) return;
   const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
@@ -248,6 +249,20 @@ function dailyStatus(lastClaim: Date | null) {
   const nextAt = lastClaim ? new Date(lastClaim.getTime() + 24 * 60 * 60 * 1000) : null;
   return { available: !nextAt || nextAt <= new Date(), nextAt, maxValue: 150000 };
 }
+const dailyCreditLimit = 15_000_000;
+function kyivDayKey(date = new Date()) {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv' }).format(date);
+}
+function dailyCreditKey(date = new Date()) { return `daily-credit:${kyivDayKey(date)}`; }
+function readCreditClaim(value: unknown) {
+  if (!value || typeof value !== 'object') return 0;
+  const claimed = (value as { claimed?: unknown }).claimed;
+  return typeof claimed === 'number' && Number.isSafeInteger(claimed) && claimed >= 0 ? claimed : 0;
+}
+function creditStatus(claimed = 0) {
+  const safeClaimed = Math.min(dailyCreditLimit, Math.max(0, claimed));
+  return { limit: dailyCreditLimit, claimed: safeClaimed, remaining: dailyCreditLimit - safeClaimed, dayKey: kyivDayKey() };
+}
 type AutoGiveaway = { kind: 'HOURLY' | 'DAILY' | 'WEEKLY'; title: string; entryPrice: number; min: number; max: number; start: Date; end: Date };
 function startOfDay(date: Date) { const value = new Date(date); value.setHours(0, 0, 0, 0); return value; }
 function automaticGiveawayWindows(now = new Date()): AutoGiveaway[] {
@@ -352,7 +367,12 @@ app.get('/api/cases', async (_req, res) => {
     return { ...entry, items: entry.items.map((item) => ({ ...item, chance: totalWeight ? Math.round(item.weight / totalWeight * 100_000) / 1000 : 0 })) };
   }));
 });
-app.get('/api/site-settings', async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
+// SiteSetting also contains private server state for timed games. Only the
+// one presentation setting is safe to expose to unauthenticated clients.
+app.get('/api/site-settings', async (_req, res) => {
+  const title = await prisma.siteSetting.findUnique({ where: { key: 'collectionTitle' } });
+  res.json(title ? { collectionTitle: title.value } : {});
+});
 app.get('/api/items', async (_req, res) => res.json(await prisma.item.findMany({ where: { active: true }, select: itemSelect, orderBy: { price: 'asc' } })));
 app.get('/api/leaderboard', async (_req, res) => {
   const users = await prisma.user.findMany({
@@ -476,12 +496,36 @@ app.post('/api/inventory/sell-all', auth, async (req: AuthedRequest, res) => {
 });
 app.get('/api/profile', auth, async (req: AuthedRequest, res) => {
   const userId = req.session!.id;
-  const [user, opens, upgrades, itemCount, transactions, upgradeHistory] = await Promise.all([
+  const [user, opens, upgrades, itemCount, transactions, upgradeHistory, credit] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: userId } }), prisma.drop.count({ where: { userId } }), prisma.upgrade.count({ where: { userId } }), prisma.inventory.count({ where: { userId, removedAt: null, revealed: true } }),
     prisma.transaction.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 10 }),
-    prisma.upgrade.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 12, include: { sourceItem: { select: itemSelect }, targetItem: { select: itemSelect } } })
+    prisma.upgrade.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 12, include: { sourceItem: { select: itemSelect }, targetItem: { select: itemSelect } } }),
+    prisma.opening.findUnique({ where: { userId_key: { userId, key: dailyCreditKey() } } }),
   ]);
-  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt) });
+  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt), credit: creditStatus(readCreditClaim(credit?.response)) });
+});
+app.get('/api/balance-credit', auth, async (req: AuthedRequest, res) => {
+  const record = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: dailyCreditKey() } } });
+  res.json({ credit: creditStatus(readCreditClaim(record?.response)) });
+});
+app.post('/api/balance-credit', auth, async (req: AuthedRequest, res) => {
+  const amount = money(req.body?.amount);
+  if (!amount || amount < 10_000) return res.status(400).json({ error: 'Можно взять от 100 SC за раз.' });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const key = dailyCreditKey();
+      const previous = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key } } });
+      const claimed = readCreditClaim(previous?.response);
+      const status = creditStatus(claimed);
+      if (amount > status.remaining) throw new Error(`Сегодня доступно только ${Math.floor(status.remaining / 100).toLocaleString('ru-RU')} SC.`);
+      const user = await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: amount } } });
+      const next = { version: 1, claimed: claimed + amount, dayKey: kyivDayKey() };
+      await tx.opening.upsert({ where: { userId_key: { userId: req.session!.id, key } }, create: { userId: req.session!.id, key, response: next }, update: { response: next } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_PIG_CREDIT', amount, description: 'Ежедневный свинокредит' } });
+      return { balance: user.balance, credit: creditStatus(claimed + amount) };
+    }, { isolationLevel: 'Serializable' });
+    res.json(result);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось выдать свинокредит.' }); }
 });
 const profileAvatars = ['🐷', '🐽', '👑', '🎰', '⚔️', '🦄', '🐸', '🦊', '🐯', '🦈', '👾', '🤖'];
 app.patch('/api/profile/customize', auth, async (req: AuthedRequest, res) => {
@@ -603,7 +647,15 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
       // represented by the protected inventory records removed above.
       const upgrade = await tx.upgrade.create({ data: { userId: req.session!.id, sourceItemId: sources[0].itemId, targetItemId: target.id, chance, balanceStake, result: success } });
       if (success) await tx.inventory.create({ data: { userId: req.session!.id, itemId: target.id, upgradeId: upgrade.id, obtainedFrom: 'upgrade', revealed: true } });
-      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: user.balance - balanceStake, balanceStake };
+      // A miss burns the source skins, but returns a small deterministic
+      // consolation directly to balance. It is part of the same transaction
+      // as the stake removal, so a refresh cannot make it disappear.
+      const compensation = success ? 0 : Math.floor(totalStake * 0.05);
+      const compensatedUser = compensation
+        ? await tx.user.update({ where: { id: user.id }, data: { balance: { increment: compensation } } })
+        : null;
+      if (compensation) await tx.transaction.create({ data: { userId: user.id, type: 'UPGRADE_COMPENSATION', amount: compensation, description: `Компенсация 5% за неудачный апгрейд «${target.name}»` } });
+      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: compensatedUser?.balance ?? user.balance - balanceStake, balanceStake, compensation };
     }, { isolationLevel: 'Serializable' });
     res.json(outcome);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Апгрейд не выполнен' }); }
@@ -700,6 +752,181 @@ app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
     }, { isolationLevel: 'Serializable' });
     res.json({ game: publicMines(game) });
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш' }); }
+});
+
+function contractMultiplier() {
+  const roll = crypto.randomInt(10_000);
+  if (roll < 4_700) return 0.10 + crypto.randomInt(46) / 100;
+  if (roll < 7_800) return 0.56 + crypto.randomInt(45) / 100;
+  if (roll < 9_400) return 1.01 + crypto.randomInt(100) / 100;
+  if (roll < 9_900) return 2.01 + crypto.randomInt(300) / 100;
+  return 5.01 + crypto.randomInt(500) / 100;
+}
+function contractWinner(items: EconomyItem[], stake: number) {
+  const target = Math.max(1, Math.round(stake * contractMultiplier()));
+  const eligible = items.filter((item) => item.price >= Math.ceil(stake * 0.10) && item.price <= Math.floor(stake * 10));
+  const pool = eligible.length ? eligible : items;
+  return pickWeighted(pool.map((item) => ({ ...item, weight: Math.max(1, Math.round(100_000 / (1 + Math.abs(Math.log(Math.max(1, item.price) / target)) * 18))) })));
+}
+app.post('/api/contracts', auth, async (req: AuthedRequest, res) => {
+  const sourceInventoryIds = req.body?.sourceInventoryIds;
+  if (!Array.isArray(sourceInventoryIds) || sourceInventoryIds.length < 3 || sourceInventoryIds.length > 10 || new Set(sourceInventoryIds).size !== sourceInventoryIds.length || sourceInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Выбери от 3 до 10 разных скинов для контракта.' });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const sources = await tx.inventory.findMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: { select: itemSelect } } });
+      if (sources.length !== sourceInventoryIds.length) throw new Error('Один из скинов уже недоступен. Обнови инвентарь.');
+      const stake = sources.reduce((sum, source) => sum + source.item.price, 0);
+      const candidates = await tx.item.findMany({ where: { active: true, price: { gte: Math.ceil(stake * 0.10), lte: Math.floor(stake * 10) } }, select: itemSelect });
+      if (!candidates.length) throw new Error('Для такой суммы пока нет подходящего результата контракта.');
+      const winner = contractWinner(candidates, stake);
+      const marked = await tx.inventory.updateMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
+      if (marked.count !== sources.length) throw new Error('Инвентарь изменился во время контракта.');
+      const inventory = await tx.inventory.create({ data: { userId: req.session!.id, itemId: winner.id, obtainedFrom: 'contract', revealed: true } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'CONTRACT', amount: 0, description: `Контракт из ${sources.length} скинов: ${stake} → ${winner.price}` } });
+      return { inventoryId: inventory.id, item: winner, stake, multiplier: winner.price / stake };
+    }, { isolationLevel: 'Serializable' });
+    res.status(201).json(result);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Контракт не выполнен.' }); }
+});
+
+type CrashPhase = 'BETTING' | 'RUNNING' | 'CRASHED';
+type CrashRound = { version: 1; id: string; phase: CrashPhase; bettingEndsAt: string; startedAt?: string; crashedAt?: string; resultEndsAt?: string; crashMultiplier: number };
+type CrashBet = { version: 1; roundId: string; status: 'BET' | 'CASHED_OUT'; stake: number; balanceStake: number; skinStake: number; skinIds: string[]; createdAt: string; payout?: number; cashoutMultiplier?: number };
+const crashRoundKey = 'crash-round-v1';
+const crashHistoryKey = 'crash-history-v1';
+function isCrashRound(value: unknown): value is CrashRound {
+  return Boolean(value && typeof value === 'object' && (value as CrashRound).version === 1 && typeof (value as CrashRound).id === 'string' && ['BETTING', 'RUNNING', 'CRASHED'].includes((value as CrashRound).phase));
+}
+function isCrashBet(value: unknown): value is CrashBet {
+  return Boolean(value && typeof value === 'object' && (value as CrashBet).version === 1 && typeof (value as CrashBet).roundId === 'string' && ['BET', 'CASHED_OUT'].includes((value as CrashBet).status));
+}
+function crashBetKey(roundId: string) { return `crash-bet:${roundId}`; }
+function randomCrashMultiplier() {
+  const roll = crypto.randomInt(10_000);
+  const between = (min: number, max: number) => Math.round((min + crypto.randomInt(Math.round((max - min) * 100) + 1) / 100) * 100) / 100;
+  if (roll < 500) return between(1.01, 1.30);
+  if (roll < 5_000) return between(1.31, 2.00);
+  if (roll < 8_000) return between(2.01, 4.00);
+  if (roll < 9_500) return between(4.01, 10.00);
+  if (roll < 9_900) return between(10.01, 30.00);
+  return between(30.01, 100.00);
+}
+function createCrashRound(now = new Date()): CrashRound {
+  return { version: 1, id: crypto.randomUUID(), phase: 'BETTING', bettingEndsAt: new Date(now.getTime() + 15_000).toISOString(), crashMultiplier: randomCrashMultiplier() };
+}
+function crashMultiplierAt(round: CrashRound, now = new Date()) {
+  if (!round.startedAt) return 1;
+  const seconds = Math.max(0, now.getTime() - new Date(round.startedAt).getTime()) / 1_000;
+  return Math.round((1 + 0.055 * Math.pow(seconds, 1.45)) * 100) / 100;
+}
+function publicCrashRound(round: CrashRound, now = new Date()) {
+  const liveMultiplier = round.phase === 'RUNNING' ? Math.min(round.crashMultiplier, crashMultiplierAt(round, now)) : round.phase === 'CRASHED' ? round.crashMultiplier : 1;
+  return { id: round.id, phase: round.phase, bettingEndsAt: round.bettingEndsAt, startedAt: round.startedAt, crashedAt: round.crashedAt, currentMultiplier: liveMultiplier, crashMultiplier: round.phase === 'CRASHED' ? round.crashMultiplier : undefined };
+}
+async function crashHistory() {
+  const setting = await prisma.siteSetting.findUnique({ where: { key: crashHistoryKey } });
+  if (!setting) return [] as Array<{ id: string; multiplier: number; crashedAt: string }>;
+  try {
+    const parsed = JSON.parse(setting.value) as { items?: Array<{ id: string; multiplier: number; crashedAt: string }> };
+    return Array.isArray(parsed.items) ? parsed.items.slice(0, 12) : [];
+  } catch { return []; }
+}
+async function saveCrashRound(round: CrashRound) {
+  await prisma.siteSetting.upsert({ where: { key: crashRoundKey }, create: { key: crashRoundKey, value: JSON.stringify(round) }, update: { value: JSON.stringify(round) } });
+}
+async function ensureCrashRound() {
+  const now = new Date();
+  const setting = await prisma.siteSetting.findUnique({ where: { key: crashRoundKey } });
+  let round: CrashRound;
+  let hasStoredRound = false;
+  try {
+    const parsed = setting ? JSON.parse(setting.value) : null;
+    if (isCrashRound(parsed)) { round = parsed; hasStoredRound = true; }
+    else round = createCrashRound(now);
+  } catch { round = createCrashRound(now); }
+  if (!hasStoredRound) { await saveCrashRound(round); return round; }
+  if (round.phase === 'BETTING' && now >= new Date(round.bettingEndsAt)) {
+    round = { ...round, phase: 'RUNNING', startedAt: round.bettingEndsAt };
+    await saveCrashRound(round);
+  }
+  if (round.phase === 'RUNNING' && crashMultiplierAt(round, now) >= round.crashMultiplier) {
+    round = { ...round, phase: 'CRASHED', crashedAt: now.toISOString(), resultEndsAt: new Date(now.getTime() + 7_000).toISOString() };
+    await saveCrashRound(round);
+    const history = [{ id: round.id, multiplier: round.crashMultiplier, crashedAt: round.crashedAt }, ...(await crashHistory()).filter((entry) => entry.id !== round.id)].slice(0, 12);
+    await prisma.siteSetting.upsert({ where: { key: crashHistoryKey }, create: { key: crashHistoryKey, value: JSON.stringify({ version: 1, items: history }) }, update: { value: JSON.stringify({ version: 1, items: history }) } });
+    io.emit('crash:updated', publicCrashRound(round));
+  }
+  if (round.phase === 'CRASHED' && round.resultEndsAt && now >= new Date(round.resultEndsAt)) {
+    round = createCrashRound(now);
+    await saveCrashRound(round);
+    io.emit('crash:updated', publicCrashRound(round));
+  }
+  return round;
+}
+function publicCrashBet(bet: CrashBet | null, round: CrashRound, now = new Date()) {
+  if (!bet) return null;
+  const status = bet.status === 'BET' && round.phase === 'CRASHED' ? 'LOST' : bet.status;
+  return { ...bet, status, livePayout: bet.status === 'BET' && round.phase === 'RUNNING' ? Math.floor(bet.stake * crashMultiplierAt(round, now)) : bet.payout };
+}
+app.get('/api/crash', async (_req, res) => {
+  const round = await ensureCrashRound();
+  res.json({ round: publicCrashRound(round), history: await crashHistory() });
+});
+app.get('/api/crash/me', auth, async (req: AuthedRequest, res) => {
+  const round = await ensureCrashRound();
+  const record = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: crashBetKey(round.id) } } });
+  const bet = record && isCrashBet(record.response) ? record.response : null;
+  res.json({ round: publicCrashRound(round), bet: publicCrashBet(bet, round) });
+});
+app.post('/api/crash/bet', auth, async (req: AuthedRequest, res) => {
+  const balanceStake = Number(req.body?.balanceStake || 0);
+  const skinInventoryIds = req.body?.skinInventoryIds || [];
+  if (!Number.isSafeInteger(balanceStake) || balanceStake < 0 || balanceStake > 10_000_000 || !Array.isArray(skinInventoryIds) || new Set(skinInventoryIds).size !== skinInventoryIds.length || skinInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Проверь ставку и выбранные скины.' });
+  try {
+    const round = await ensureCrashRound();
+    if (round.phase !== 'BETTING' || Date.now() >= new Date(round.bettingEndsAt).getTime()) throw new Error('Ставки на этот раунд уже закрыты.');
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: crashBetKey(round.id) } } });
+      if (existing) throw new Error('Ставка на этот раунд уже сделана.');
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      if (user.balance < balanceStake) throw new Error('Недостаточно свинокоинов для этой ставки.');
+      const skins = skinInventoryIds.length ? await tx.inventory.findMany({ where: { id: { in: skinInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: { select: { price: true } } } }) : [];
+      if (skins.length !== skinInventoryIds.length) throw new Error('Один из выбранных скинов уже недоступен.');
+      const skinStake = skins.reduce((sum, skin) => sum + skin.item.price, 0);
+      const stake = balanceStake + skinStake;
+      if (stake < 10_000 || stake > 10_000_000) throw new Error('Общая ставка — от 100 до 100 000 SC.');
+      if (balanceStake) await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: balanceStake } } });
+      if (skins.length) {
+        const marked = await tx.inventory.updateMany({ where: { id: { in: skinInventoryIds }, userId: user.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
+        if (marked.count !== skins.length) throw new Error('Скины уже участвуют в другой операции.');
+      }
+      const bet: CrashBet = { version: 1, roundId: round.id, status: 'BET', stake, balanceStake, skinStake, skinIds: skinInventoryIds, createdAt: new Date().toISOString() };
+      await tx.opening.create({ data: { userId: user.id, key: crashBetKey(round.id), response: bet } });
+      await tx.transaction.create({ data: { userId: user.id, type: 'CRASH_BET', amount: -balanceStake, description: `Ставка в «Свинокраш» · ${Math.floor(skinStake / 100)} SC скинами` } });
+      return { bet, balance: user.balance - balanceStake };
+    }, { isolationLevel: 'Serializable' });
+    res.status(201).json({ ...result, round: publicCrashRound(round) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось поставить в краше.' }); }
+});
+app.post('/api/crash/cashout', auth, async (req: AuthedRequest, res) => {
+  try {
+    const round = await ensureCrashRound();
+    if (round.phase !== 'RUNNING') throw new Error(round.phase === 'CRASHED' ? 'Краш уже случился.' : 'Дождись старта раунда.');
+    if (crashMultiplierAt(round) >= round.crashMultiplier) throw new Error('Краш уже случился.');
+    const result = await prisma.$transaction(async (tx) => {
+      const record = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: crashBetKey(round.id) } } });
+      if (!record || !isCrashBet(record.response) || record.response.status !== 'BET') throw new Error('Активная ставка не найдена.');
+      const cashoutMultiplier = crashMultiplierAt(round);
+      if (cashoutMultiplier >= round.crashMultiplier) throw new Error('Краш уже случился.');
+      const payout = Math.floor(record.response.stake * cashoutMultiplier);
+      const bet: CrashBet = { ...record.response, status: 'CASHED_OUT', payout, cashoutMultiplier };
+      const user = await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
+      await tx.opening.update({ where: { id: record.id }, data: { response: bet } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'CRASH_CASHOUT', amount: payout, description: `Вывод из «Свинокраша» ×${cashoutMultiplier.toFixed(2)}` } });
+      return { bet, payout, balance: user.balance };
+    }, { isolationLevel: 'Serializable' });
+    res.json({ ...result, round: publicCrashRound(round) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш.' }); }
 });
 
 type BattleMode = 'NORMAL' | 'CURSED' | 'JACKPOT' | 'LAST';
@@ -871,6 +1098,10 @@ async function advanceNavalGames() {
   }
 }
 setInterval(() => { void advanceNavalGames().catch((error) => console.error('Naval timer:', error)); }, 1_000).unref();
+// A crash round is server-timed. The ticker lets it start and resolve even
+// when nobody happens to have the game screen open at that exact moment.
+void ensureCrashRound().catch((error) => console.error('Crash scheduler:', error));
+setInterval(() => { void ensureCrashRound().catch((error) => console.error('Crash scheduler:', error)); }, 750).unref();
 // Results are created before their animation starts. If a browser is refreshed
 // mid-animation, reveal any pending reward on the next authenticated request so
 // a successful upgrade can never leave an invisible item in the database.
