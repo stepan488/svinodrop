@@ -339,9 +339,14 @@ function ScratchReveal({ onComplete }: { onComplete: () => void }) {
       const rect = canvas.getBoundingClientRect(); const ratio = window.devicePixelRatio || 1
       canvas.width = Math.round(rect.width * ratio); canvas.height = Math.round(rect.height * ratio)
       const context = canvas.getContext('2d'); if (!context) return
-      context.scale(ratio, ratio); context.fillStyle = '#09070d'; context.fillRect(0, 0, rect.width, rect.height)
-      context.strokeStyle = '#5a3a62'; context.lineWidth = 2; context.strokeRect(1, 1, rect.width - 2, rect.height - 2)
-      context.fillStyle = '#ffe1f1'; context.font = '900 64px sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText('?', rect.width / 2, rect.height / 2)
+      context.scale(ratio, ratio)
+      const glow = context.createRadialGradient(rect.width / 2, rect.height * .4, 2, rect.width / 2, rect.height / 2, Math.max(rect.width, rect.height) * .72)
+      glow.addColorStop(0, '#442040'); glow.addColorStop(.48, '#180d22'); glow.addColorStop(1, '#07070c')
+      context.fillStyle = glow; context.fillRect(0, 0, rect.width, rect.height)
+      context.strokeStyle = '#8b457d'; context.lineWidth = 2; context.strokeRect(2, 2, rect.width - 4, rect.height - 4)
+      context.setLineDash([5, 7]); context.strokeStyle = '#f16eb37a'; context.strokeRect(12, 12, rect.width - 24, rect.height - 24); context.setLineDash([])
+      context.fillStyle = '#ffd8eb'; context.shadowColor = '#ff4da7'; context.shadowBlur = 20; context.font = '900 76px sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText('?', rect.width / 2, rect.height * .46); context.shadowBlur = 0
+      context.fillStyle = '#d895bc'; context.font = '900 10px sans-serif'; context.fillText('СОТРИ, ЧТОБЫ УЗНАТЬ', rect.width / 2, rect.height * .71)
     }
     paint(); window.addEventListener('resize', paint); return () => window.removeEventListener('resize', paint)
   }, [])
