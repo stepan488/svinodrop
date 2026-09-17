@@ -141,7 +141,7 @@
 .contract-prize-art{overflow:hidden;border:1px solid #8b4877!important;border-radius:18px!important;background:radial-gradient(circle at 50% 38%,#4a2147 0,#180b22 52%,#08070d 100%)!important;box-shadow:inset 0 0 0 7px #ffffff05,inset 0 0 46px #000c,0 16px 30px #0008}
 .contract-prize-art:before{content:'🐽';position:absolute;z-index:2;left:16px;top:13px;color:#ffb8db;opacity:.25;font-size:20px;filter:drop-shadow(0 0 8px #ff4da8)}
 .contract-prize-art:after{content:'СЕКРЕТНЫЙ ДРОП';position:absolute;z-index:2;left:50%;bottom:14px;transform:translateX(-50%);color:#f6b6d7;opacity:.48;font-size:8px;font-weight:900;letter-spacing:2px;white-space:nowrap}
-.contract-scratch{z-index:4;border-radius:17px!important;background:radial-gradient(circle at 50% 35%,#1b1325,#08070d 72%)}
+.contract-scratch{z-index:4;border-radius:17px!important;background:transparent!important}
 .contract-scratch canvas{border-radius:17px!important}
 
 /* The four former ultra cases live at the end of the Piggy Payback shelf,
