@@ -111,6 +111,11 @@ async function main() {
   // a deploy. This also restores earlier custom skins to upgrades and cases.
   await prisma.item.updateMany({ where: { id: { in: RETIRED_LEGACY_ITEM_IDS } }, data: { active: false, isCustom: false, upgradeEligible: false } })
   await prisma.caseItem.deleteMany({ where: { itemId: { in: RETIRED_LEGACY_ITEM_IDS } } })
+  const wikiLegacyIds = (await prisma.item.findMany({ where: { image: { contains: 'cs-wiki.org' } }, select: { id: true } })).map((item) => item.id)
+  if (wikiLegacyIds.length) {
+    await prisma.item.updateMany({ where: { id: { in: wikiLegacyIds } }, data: { active: false, isCustom: false, upgradeEligible: false } })
+    await prisma.caseItem.deleteMany({ where: { itemId: { in: wikiLegacyIds } } })
+  }
   await prisma.item.updateMany({ where: { id: { notIn: MARKET_ITEMS.map((item) => item.id) }, isCustom: true }, data: { active: true, upgradeEligible: true } })
 
   for (const config of CASES) {
