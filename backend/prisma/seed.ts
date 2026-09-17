@@ -61,7 +61,7 @@ export const CASES = [
   { name: 'Триллионер Свин', slug: 'trillionaire-pig', price: 21999900, image: 'https://i.ibb.co/d048cfY0/28672eb8-a65b-450f-b172-e78fe5ce5411.png', collection: 'Свинячий Окуп', itemIds: ['25','26','27','28','29','30','31'], weights: {} },
   { name: 'Квадриллионер Свин', slug: 'quadrillionaire-pig', price: 37999900, image: 'https://i.ibb.co/7JQwTpVd/c6fa35c6-5211-4a74-b35a-93fb11cfe143.png', collection: 'Свинячий Окуп', itemIds: ['26','27','28','29','30','31','32'], weights: {} },
   { name: 'Квинтиллионер Свин', slug: 'quintillionaire-pig', price: 62999900, image: 'https://i.ibb.co/gMPv0p84/53826e57-4bb4-48ae-8ab8-52ffc2b29e43.png', collection: 'Свинячий Окуп', itemIds: ['27','28','29','30','31','32'], weights: {} },
-  { name: 'Секстиллионер Свин', slug: 'sextillionaire-pig', price: 99999900, image: 'https://i.ibb.co/gQfmWx3/d421da07-dac5-4c39-8a6c-fec1e2ea3c91.png', collection: 'Свинячий Окуп', itemIds: ['28','29','30','31','32'], weights: {} },
+  { name: 'Секстиллионер Свин', slug: 'sextillionaire-pig', price: 99999900, image: 'https://i.ibb.co/Y4DdTXWN/966b7b39-58f7-4293-af75-15d2fff56904.png', collection: 'Свинячий Окуп', itemIds: ['28','29','30','31','32'], weights: {} },
   { name: 'Бронзовая Свинка', slug: 'bronze-pig', price: 299900, image: 'https://i.ibb.co/yBhQB6HL/b9afd12f-6393-4daf-af18-f21d2ba1822e.png', collection: 'От рубля до ножа', itemIds: ['1','2','3','4','5','6','7','8','9','10'], weights: {} },
   { name: 'Серебряная Свинка', slug: 'silver-pig', price: 549900, image: 'https://i.ibb.co/3bxYFqN/259db9b0-1b65-4a3c-a0db-4cd6e850ed68.png', collection: 'От рубля до ножа', itemIds: ['4','5','6','7','8','9','10','11','12','13'], weights: {} },
   { name: 'Золотая Свинка', slug: 'gold-pig', price: 1129900, image: 'https://i.ibb.co/HLzj34nn/c11187df-fda2-4f20-b861-256468e28b05.png', collection: 'От рубля до ножа', itemIds: ['8','9','10','11','12','13','14','15','16','17'], weights: {} },
@@ -102,7 +102,9 @@ async function main() {
   for (const item of MARKET_ITEMS) {
     await prisma.item.upsert({
       where: { id: item.id },
-      update: { name: item.name, wear: item.wear, price: item.price, image: item.image, rarity: item.rarity, active: true, isCustom: false },
+      // Existing items belong to the owner from this point on. Seed data only
+      // fills a blank database and must not overwrite admin edits on deploy.
+      update: {},
       create: { ...item, active: true, isCustom: false },
     })
   }
@@ -122,16 +124,19 @@ async function main() {
     const magic = 'openingStyle' in config && config.openingStyle === 'MAGIC'
     const maxOpen = 'maxOpen' in config ? config.maxOpen : 4
     const contentsHidden = 'contentsHidden' in config ? config.contentsHidden : false
-    const caseData = await prisma.case.upsert({
-      where: { slug: config.slug },
-      update: { name: config.name, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', active: true, openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden },
-      create: { name: config.name, slug: config.slug, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden },
-    })
+    const existingCase = await prisma.case.findUnique({ where: { slug: config.slug } })
+    if (existingCase) continue
+    const caseData = await prisma.case.create({ data: { name: config.name, slug: config.slug, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden } })
     const contents = MARKET_ITEMS.filter((item) => (config.itemIds as readonly string[]).includes(item.id))
-    await prisma.$transaction([
-      prisma.caseItem.deleteMany({ where: { caseId: caseData.id } }),
-      prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || (magic ? magicWeight(item.price, config.price) : caseWeight(item.price, config.price)) })) }),
-    ])
+    await prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || (magic ? magicWeight(item.price, config.price) : caseWeight(item.price, config.price)) })) })
+  }
+
+  // Apply the owner-requested artwork once, then leave future admin changes alone.
+  const artworkKey = 'catalog-art-sextillionaire-pig-v2'
+  const artworkApplied = await prisma.siteSetting.findUnique({ where: { key: artworkKey } })
+  if (!artworkApplied) {
+    await prisma.case.updateMany({ where: { slug: 'sextillionaire-pig' }, data: { image: 'https://i.ibb.co/Y4DdTXWN/966b7b39-58f7-4293-af75-15d2fff56904.png' } })
+    await prisma.siteSetting.create({ data: { key: artworkKey, value: new Date().toISOString() } })
   }
 
   console.log(`SvinoDrop: updated ${MARKET_ITEMS.length} live skins and ${CASES.length} case collections.`)

@@ -1337,9 +1337,6 @@ async function bootstrapAdmin() {
   }
 }
 bootstrapAdmin().then(async () => {
-  await repairCaseEconomy();
   await ensureNewMagicCases();
-  await rebalanceCollectionOdds();
-  await ensureTitanPapaChance();
   server.listen(PORT, () => console.log(`SvinoDrop API: http://localhost:${PORT}`));
 }).catch((error) => { console.error('Не удалось инициализировать сервер', error); process.exit(1); });
