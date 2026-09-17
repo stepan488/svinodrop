@@ -47,7 +47,7 @@ model Item {
   rarity String
   active Boolean @default(true)
   upgradeEligible Boolean @default(true)
-  isCustom Boolean @default(false)
+  isCustom Boolean @default(true)
   caseItems CaseItem[]
   inventory Inventory[]
   targetDrops Drop[] @relation("DropItem")

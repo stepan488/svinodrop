@@ -41,6 +41,10 @@ export const BASE_MARKET_ITEMS = [
 
 export const MARKET_ITEMS = BASE_MARKET_ITEMS
 
+// These were only temporary/legacy catalogue imports. Keep historic inventory
+// records intact, but never surface them in cases or as upgrade targets again.
+const RETIRED_LEGACY_ITEM_IDS = ['34','35','36','37','38','39','40','41','42','43','44','45','46','47','48','49','50','pig-1','pig-2','pig-3','pig-4','pig-5','pig-6','pig-7','pig-8','pig-9','pig-10']
+
 export const CASES = [
   { name: 'Генста Свин!', slug: 'gensta-svin', price: 49900, image: 'https://i.ibb.co/tPW2Xyys/b4f6cb58-752e-44ae-885c-bbbe73098ba9-removebg-preview.png', collection: 'Свиноохотники', itemIds: ['1','2','3','4','5','6','7','8','9'], weights: {} },
   { name: 'Хакер Свин!', slug: 'hacker-svin', price: 99900, image: 'https://i.ibb.co/tpP5yjCF/48eb32a1-02f8-438f-b615-996134c84736-removebg-preview.png', collection: 'Свиноохотники', itemIds: ['4','5','6','7','8','9','10','11','12','13','14'], weights: {} },
@@ -105,7 +109,9 @@ async function main() {
 
   // Owner-created skins are permanent catalogue entries: do not hide them on
   // a deploy. This also restores earlier custom skins to upgrades and cases.
-  await prisma.item.updateMany({ where: { id: { notIn: MARKET_ITEMS.map((item) => item.id) } }, data: { active: true, isCustom: true, upgradeEligible: true } })
+  await prisma.item.updateMany({ where: { id: { in: RETIRED_LEGACY_ITEM_IDS } }, data: { active: false, isCustom: false, upgradeEligible: false } })
+  await prisma.caseItem.deleteMany({ where: { itemId: { in: RETIRED_LEGACY_ITEM_IDS } } })
+  await prisma.item.updateMany({ where: { id: { notIn: MARKET_ITEMS.map((item) => item.id) }, isCustom: true }, data: { active: true, upgradeEligible: true } })
 
   for (const config of CASES) {
     const magic = 'openingStyle' in config && config.openingStyle === 'MAGIC'
