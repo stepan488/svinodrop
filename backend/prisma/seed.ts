@@ -120,16 +120,33 @@ async function main() {
   }
   await prisma.item.updateMany({ where: { id: { notIn: MARKET_ITEMS.map((item) => item.id) }, isCustom: true }, data: { active: true, upgradeEligible: true } })
 
+  // A previous catalogue migration overwrote the silver-pig row with George.
+  // Repair just this known corrupted slug once, without touching later admin
+  // changes to any other case.
+  const silverRepairKey = 'catalog-repair-silver-pig-v1'
+  const silverRepairApplied = await prisma.siteSetting.findUnique({ where: { key: silverRepairKey } })
   for (const config of CASES) {
     const magic = 'openingStyle' in config && config.openingStyle === 'MAGIC'
     const maxOpen = 'maxOpen' in config ? config.maxOpen : 4
     const contentsHidden = 'contentsHidden' in config ? config.contentsHidden : false
     const existingCase = await prisma.case.findUnique({ where: { slug: config.slug } })
-    if (existingCase) continue
+    if (existingCase) {
+      if (config.slug === 'silver-pig' && !silverRepairApplied) {
+        const contents = MARKET_ITEMS.filter((item) => (config.itemIds as readonly string[]).includes(item.id))
+        await prisma.$transaction([
+          prisma.case.update({ where: { id: existingCase.id }, data: { name: config.name, price: config.price, image: config.image, collection: config.collection || 'От рубля до ножа', openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden, active: true } }),
+          prisma.caseItem.deleteMany({ where: { caseId: existingCase.id } }),
+          prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: existingCase.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || caseWeight(item.price, config.price) })) }),
+        ])
+      }
+      continue
+    }
     const caseData = await prisma.case.create({ data: { name: config.name, slug: config.slug, price: config.price, image: config.image, collection: config.collection || 'Свиноохотники', openingStyle: magic ? 'MAGIC' : 'REEL', maxOpen, contentsHidden } })
     const contents = MARKET_ITEMS.filter((item) => (config.itemIds as readonly string[]).includes(item.id))
     await prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || (magic ? magicWeight(item.price, config.price) : caseWeight(item.price, config.price)) })) })
   }
+
+  if (!silverRepairApplied) await prisma.siteSetting.create({ data: { key: silverRepairKey, value: new Date().toISOString() } })
 
   // Apply the owner-requested artwork once, then leave future admin changes alone.
   const artworkKey = 'catalog-art-sextillionaire-pig-v2'

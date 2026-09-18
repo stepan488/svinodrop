@@ -113,22 +113,30 @@ const collectionOdds = {
   'Ультра Богатый Свинки': { min: 0.10, max: 10, target: 0.76 },
 } as const;
 
+const defaultCaseOdds = { min: 0.10, max: 8, target: 0.74 };
+
 async function rebalanceCollectionOdds() {
-  const version = 'collection-odds-v4';
+  const version = 'collection-odds-v5-all-cases';
   const marker = await prisma.siteSetting.findUnique({ where: { key: 'drop-economy-version' } });
   if (marker?.value === version) return;
-  const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
-  const cases = await prisma.case.findMany({ where: { active: true, collection: { in: Object.keys(collectionOdds) } }, include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } } });
+  // Titan Holo is a deliberate one-off jackpot for Papa Pig only. Legacy
+  // migrations accidentally put it into cheap and unrelated cases.
+  await prisma.caseItem.deleteMany({ where: { itemId: '32', case: { slug: { not: 'papa-pig' } } } });
+  const catalogue = await prisma.item.findMany({ where: { active: true, id: { not: '32' } }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+  // Hidden magic cases use the same server-side economy rules; only their
+  // contents are concealed from the interface.
+  const cases = await prisma.case.findMany({ where: { active: true }, include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } } });
   for (const caseData of cases) {
-    const rules = collectionOdds[caseData.collection as keyof typeof collectionOdds];
+    const rules = collectionOdds[caseData.collection as keyof typeof collectionOdds] || defaultCaseOdds;
     const eligible = caseData.items.filter((entry) => entry.item.active);
     const badLow = eligible.filter((entry) => entry.item.price < caseData.price * rules.min);
-    // A collection may reach its declared loss boundary, but never go below
-    // it. Remove only objectively out-of-range legacy filler, leaving at
+    const badHigh = eligible.filter((entry) => entry.item.price > caseData.price * rules.max && !(caseData.slug === 'papa-pig' && entry.item.id === '32'));
+    const outOfRange = Array.from(new Map([...badLow, ...badHigh].map((entry) => [entry.id, entry])).values());
+    // Keep every prize inside the declared loss/profit corridor and leave at
     // least two prizes in every case.
-    const removeBadLow = badLow.length > 0 && eligible.length - badLow.length >= 2;
-    if (removeBadLow) await prisma.caseItem.deleteMany({ where: { id: { in: badLow.map((entry) => entry.id) } } });
-    const current = (removeBadLow ? eligible.filter((entry) => !badLow.includes(entry)) : eligible).map((entry) => ({ id: entry.item.id, price: entry.item.price }));
+    const removeOutOfRange = outOfRange.length > 0 && eligible.length - outOfRange.length >= 2;
+    if (removeOutOfRange) await prisma.caseItem.deleteMany({ where: { id: { in: outOfRange.map((entry) => entry.id) } } });
+    const current = (removeOutOfRange ? eligible.filter((entry) => !outOfRange.includes(entry)) : eligible).map((entry) => ({ id: entry.item.id, price: entry.item.price }));
     if (!current.length) continue;
     const known = new Set(current.map((item) => item.id));
     const minPrice = Math.min(...current.map((item) => item.price)); const maxPrice = Math.max(...current.map((item) => item.price));
@@ -138,7 +146,7 @@ async function rebalanceCollectionOdds() {
       if (low) { additions.push(low); known.add(low.id); }
     }
     if (maxPrice < caseData.price * rules.max) {
-      const high = catalogue.find((item) => !known.has(item.id) && item.price >= Math.round(caseData.price * rules.max * 0.85));
+      const high = catalogue.find((item) => !known.has(item.id) && item.price >= Math.round(caseData.price * rules.max * 0.85) && item.price <= Math.round(caseData.price * rules.max));
       if (high) additions.push(high);
     }
     const pool = [...current, ...additions];
@@ -157,7 +165,7 @@ const newMagicCases = [
 ] as const;
 
 async function ensureNewMagicCases() {
-  const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+  const catalogue = await prisma.item.findMany({ where: { active: true, id: { not: '32' } }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
   for (const config of newMagicCases) {
     const existing = await prisma.case.findUnique({ where: { slug: config.slug }, include: { items: true } });
     if (existing) continue;
@@ -196,7 +204,7 @@ async function repairCaseEconomy() {
   // damaged public case from the live catalogue; magic cases are never read or
   // changed by this repair.
   let repairedDorfus = false;
-  const catalogue = await prisma.item.findMany({ where: { active: true }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+  const catalogue = await prisma.item.findMany({ where: { active: true, id: { not: '32' } }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
   const dorfus = await prisma.case.findUnique({
     where: { slug: 'ok-daa' },
     include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } },
@@ -1436,5 +1444,8 @@ async function bootstrapAdmin() {
 }
 bootstrapAdmin().then(async () => {
   await ensureNewMagicCases();
+  await repairCaseEconomy();
+  await rebalanceCollectionOdds();
+  await ensureTitanPapaChance();
   server.listen(PORT, () => console.log(`SvinoDrop API: http://localhost:${PORT}`));
 }).catch((error) => { console.error('Не удалось инициализировать сервер', error); process.exit(1); });
