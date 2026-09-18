@@ -36,6 +36,7 @@ model User {
   battlePlayers BattlePlayer[]
   navalGamesCreated NavalGame[] @relation("NavalCreator")
   navalPlayers NavalPlayer[]
+  bossAttacks BossAttack[]
 }
 
 model Item {
@@ -277,4 +278,17 @@ model SiteSetting {
   key String @id
   value String
   updatedAt DateTime @updatedAt
+}
+
+model BossAttack {
+  id String @id @default(uuid())
+  userId String
+  eventKey String
+  attackKey String
+  damage Int
+  spent Int
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([eventKey, userId])
+  @@index([eventKey, createdAt])
 }

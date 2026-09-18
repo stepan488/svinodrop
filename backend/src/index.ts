@@ -39,7 +39,7 @@ const corsOptions = {
 };
 const io = new Server(server, { cors: corsOptions });
 const PORT = Number(process.env.PORT || 5000);
-const onlineSockets = new Set<string>();
+const onlineSockets = new Map<string, string | null>();
 const attempts = new Map<string, { count: number; reset: number }>();
 
 type Session = { id: string; email: string; role: string };
@@ -283,6 +283,72 @@ const dailyCreditLimit = 15_000_000;
 function kyivDayKey(date = new Date()) {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Kyiv' }).format(date);
 }
+function kyivDayStart(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Kyiv', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23', minute: '2-digit', second: '2-digit' }).formatToParts(date);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, Number(part.value)]));
+  const localClockAsUtc = Date.UTC(values.year, values.month - 1, values.day, values.hour, values.minute, values.second);
+  const offset = localClockAsUtc - date.getTime();
+  return new Date(Date.UTC(values.year, values.month - 1, values.day) - offset);
+}
+
+const bossEvent = {
+  key: 'falych-2026-09',
+  title: 'Битва с Фалычем',
+  startsAt: new Date('2026-09-19T00:00:00+03:00'),
+  endsAt: new Date('2026-10-19T23:59:59.999+03:00'),
+  maxHp: 1_000_000_000,
+};
+const bossAttacks = [
+  { key: 'SEND', label: 'Послать Фалыча', cost: 500, damage: 500, icon: '💬', quote: 'Фалыч, QR на кейсы сегодня не оплатим.' },
+  { key: 'BAIT', label: 'Забайтить и не оплатить', cost: 2_500, damage: 2_500, icon: '🎣', quote: '«Сейчас оплачу» — и тишина в ответ.' },
+  { key: 'SLAP', label: 'Влепить пощёчину', cost: 5_000, damage: 5_000, icon: '✋', quote: 'Фалыч снова просит QR на казик по кейсам.' },
+  { key: 'KUNGFU', label: 'Кунг-фу удар', cost: 10_000, damage: 10_000, icon: '🥋', quote: 'Комбо по лицу Фалыча за очередной QR.' },
+  { key: 'ROCKET', label: 'Ракетный удар', cost: 25_000, damage: 25_000, icon: '🚀', quote: 'Ракета летит прямо в его просьбу об оплате.' },
+  { key: 'NUCLEAR', label: 'Ядерный удар', cost: 100_000, damage: 100_000, icon: '☢️', quote: 'Финальный ответ на все QR-коды Фалыча.' },
+] as const;
+type BossAttackKey = typeof bossAttacks[number]['key'];
+const bossAttackByKey = new Map<BossAttackKey, typeof bossAttacks[number]>(bossAttacks.map((attack) => [attack.key, attack]));
+function bossEventState(now = new Date()) {
+  return { active: now >= bossEvent.startsAt && now <= bossEvent.endsAt, startsAt: bossEvent.startsAt, endsAt: bossEvent.endsAt };
+}
+async function topDropForUser(userId: string) {
+  return prisma.drop.findFirst({ where: { userId }, include: { item: { select: itemSelect } }, orderBy: { item: { price: 'desc' } } });
+}
+async function onlineUsersView() {
+  const ids = [...new Set([...onlineSockets.values()].filter((id): id is string => Boolean(id)))];
+  if (!ids.length) return [];
+  const users = await prisma.user.findMany({ where: { id: { in: ids }, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true } });
+  const byId = new Map(users.map((user) => [user.id, user]));
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+async function dailyWinnersView() {
+  const rows = await prisma.transaction.groupBy({ by: ['userId'], where: { createdAt: { gte: kyivDayStart() }, amount: { gt: 0n } }, _sum: { amount: true }, orderBy: { _sum: { amount: 'desc' } }, take: 5 });
+  const users = await prisma.user.findMany({ where: { id: { in: rows.map((row) => row.userId) }, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true } });
+  const byId = new Map(users.map((user) => [user.id, user]));
+  return rows.map((row, index) => ({ ...byId.get(row.userId), raised: Number(row._sum.amount || 0), rank: index + 1 })).filter((row): row is { id: string; username: string; avatar: string | null; nickColor: string; raised: number; rank: number } => Boolean(row.id));
+}
+async function bossFightView(userId?: string) {
+  const [total, grouped] = await Promise.all([
+    prisma.bossAttack.aggregate({ where: { eventKey: bossEvent.key }, _sum: { damage: true } }),
+    prisma.bossAttack.groupBy({ by: ['userId'], where: { eventKey: bossEvent.key }, _sum: { damage: true }, orderBy: { _sum: { damage: 'desc' } }, take: 50 }),
+  ]);
+  const users = await prisma.user.findMany({ where: { id: { in: grouped.map((entry) => entry.userId) }, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true } });
+  const byId = new Map(users.map((user) => [user.id, user]));
+  const leaderboard = grouped.flatMap((entry) => {
+    const user = byId.get(entry.userId);
+    return user ? [{ ...user, damage: entry._sum.damage || 0 }] : [];
+  }).map((entry, index) => ({ ...entry, rank: index + 1 }));
+  const totalDamage = total._sum.damage || 0;
+  const mine = userId ? leaderboard.find((entry) => entry.id === userId)?.damage || 0 : 0;
+  return {
+    event: { ...bossEvent, ...bossEventState(), rewards: ['1 место — 250 ₽', '2 место — 150 ₽', '3 место — 100 ₽'] },
+    totalDamage,
+    remainingHp: Math.max(0, bossEvent.maxHp - totalDamage),
+    attacks: bossAttacks,
+    leaderboard,
+    myDamage: mine,
+  };
+}
 function dailyCreditKey(date = new Date()) { return `daily-credit:${kyivDayKey(date)}`; }
 function readCreditClaim(value: unknown) {
   if (!value || typeof value !== 'object') return 0;
@@ -475,6 +541,27 @@ app.get('/api/leaderboard', async (_req, res) => {
     .map((entry, index) => ({ ...entry, rank: index + 1 }));
   res.json(board);
 });
+app.get('/api/daily-winners', async (_req, res) => res.json(await dailyWinnersView()));
+app.get('/api/online', async (_req, res) => res.json(await onlineUsersView()));
+app.get('/api/boss-fight', async (req: AuthedRequest, res) => res.json(await bossFightView(req.session?.id)));
+app.post('/api/boss-fight/attack', auth, async (req: AuthedRequest, res) => {
+  const attack = bossAttackByKey.get(req.body?.attackKey as BossAttackKey);
+  if (!attack) return res.status(400).json({ error: 'Выбери одну из атак на Фалыча.' });
+  if (!bossEventState().active) return res.status(400).json({ error: 'Ивент «Битва с Фалычем» сейчас не активен.' });
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      const spent = attack.cost * 100;
+      if (user.balance < spent) throw new Error('Недостаточно свинокоинов для этой атаки.');
+      const nextUser = await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: spent } } });
+      await tx.bossAttack.create({ data: { userId: user.id, eventKey: bossEvent.key, attackKey: attack.key, damage: attack.damage, spent } });
+      await tx.transaction.create({ data: { userId: user.id, type: 'BOSS_ATTACK', amount: -spent, description: `Битва с Фалычем · ${attack.label} · ${attack.damage.toLocaleString('ru-RU')} урона` } });
+      return { balance: nextUser.balance, attack };
+    }, { isolationLevel: 'Serializable' });
+    io.emit('boss:updated');
+    res.json({ ...result, boss: await bossFightView(req.session!.id) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Атака не прошла.' }); }
+});
 app.get('/api/giveaways', async (_req, res) => {
   await ensureAutomaticGiveaways();
   const giveaways = await prisma.giveaway.findMany({ where: { active: true }, include: { prizeItem: { select: itemSelect }, _count: { select: { entries: true } } }, orderBy: { endsAt: 'asc' } });
@@ -577,14 +664,15 @@ app.post('/api/inventory/sell-all', auth, async (req: AuthedRequest, res) => {
 });
 app.get('/api/profile', auth, async (req: AuthedRequest, res) => {
   const userId = req.session!.id;
-  const [user, opens, upgrades, itemCount, transactions, upgradeHistory, credit, streak] = await Promise.all([
+  const [user, opens, upgrades, itemCount, transactions, upgradeHistory, credit, streak, topDrop] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: userId } }), prisma.drop.count({ where: { userId } }), prisma.upgrade.count({ where: { userId } }), prisma.inventory.count({ where: { userId, removedAt: null, revealed: true } }),
     prisma.transaction.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 10 }),
     prisma.upgrade.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 12, include: { sourceItem: { select: itemSelect }, targetItem: { select: itemSelect } } }),
     prisma.opening.findUnique({ where: { userId_key: { userId, key: dailyCreditKey() } } }),
     getDailyStreakView(userId),
+    topDropForUser(userId),
   ]);
-  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt), credit: creditStatus(readCreditClaim(credit?.response)), streak });
+  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, topDrop: topDrop ? { item: topDrop.item, createdAt: topDrop.createdAt } : null, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt), credit: creditStatus(readCreditClaim(credit?.response)), streak });
 });
 app.get('/api/balance-credit', auth, async (req: AuthedRequest, res) => {
   const record = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: dailyCreditKey() } } });
@@ -623,9 +711,16 @@ app.delete('/api/profile', auth, async (req: AuthedRequest, res) => {
   } catch { res.status(400).json({ error: 'Не удалось удалить аккаунт: заверши активные игры и попробуй снова.' }); }
 });
 app.get('/api/users/:id', async (req, res) => {
-  const user = await prisma.user.findFirst({ where: { id: req.params.id, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true, createdAt: true, _count: { select: { drops: true, upgrades: true, inventory: { where: { removedAt: null, revealed: true } } } } } });
+  const user = await prisma.user.findFirst({
+    where: { id: req.params.id, isBanned: false },
+    select: {
+      id: true, username: true, avatar: true, nickColor: true, createdAt: true,
+      _count: { select: { drops: true, upgrades: true, inventory: { where: { removedAt: null, revealed: true } } } },
+    },
+  });
   if (!user) return res.status(404).json({ error: 'Профиль не найден.' });
-  res.json({ id: user.id, username: user.username, avatar: user.avatar, nickColor: user.nickColor, createdAt: user.createdAt, stats: { opens: user._count.drops, upgrades: user._count.upgrades, itemCount: user._count.inventory } });
+  const topDrop = await topDropForUser(user.id);
+  res.json({ id: user.id, username: user.username, avatar: user.avatar, nickColor: user.nickColor, createdAt: user.createdAt, stats: { opens: user._count.drops, upgrades: user._count.upgrades, itemCount: user._count.inventory }, topDrop: topDrop ? { item: topDrop.item, createdAt: topDrop.createdAt } : null });
 });
 
 app.get('/api/daily-case', auth, async (req: AuthedRequest, res) => {
@@ -1502,9 +1597,22 @@ app.delete('/api/admin/chat/:id', auth, admin, async (req: AuthedRequest, res) =
   res.json({ ok: true });
 });
 
-io.on('connection', (socket) => {
-  onlineSockets.add(socket.id); io.emit('online:count', onlineSockets.size);
-  socket.on('disconnect', () => { onlineSockets.delete(socket.id); io.emit('online:count', onlineSockets.size); });
+io.on('connection', async (socket) => {
+  let userId: string | null = null;
+  const token = typeof socket.handshake.auth?.token === 'string' ? socket.handshake.auth.token : '';
+  if (token) {
+    try { userId = (jwt.verify(token, secret()) as Session).id; }
+    catch { userId = null; }
+  }
+  onlineSockets.set(socket.id, userId);
+  if (userId) await prisma.user.updateMany({ where: { id: userId }, data: { lastOnline: new Date() } });
+  io.emit('online:count', onlineSockets.size);
+  io.emit('online:users', await onlineUsersView());
+  socket.on('disconnect', () => {
+    onlineSockets.delete(socket.id);
+    io.emit('online:count', onlineSockets.size);
+    void onlineUsersView().then((users) => io.emit('online:users', users));
+  });
 });
 // Keep scheduled giveaways moving even when nobody has the giveaways page open.
 // If a host was asleep, the first run after wake-up safely settles overdue rounds.

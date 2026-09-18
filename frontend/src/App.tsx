@@ -53,6 +53,45 @@ type LeaderboardRow = {
   total: number;
   rank: number;
 };
+type DailyWinner = {
+  id: string;
+  username: string;
+  avatar: string | null;
+  nickColor: string;
+  raised: number;
+  rank: number;
+};
+type OnlinePig = {
+  id: string;
+  username: string;
+  avatar: string | null;
+  nickColor: string;
+};
+type ProfileTopDrop = { item: Skin; createdAt: string } | null;
+type BossAttackOption = {
+  key: "SEND" | "BAIT" | "SLAP" | "KUNGFU" | "ROCKET" | "NUCLEAR";
+  label: string;
+  cost: number;
+  damage: number;
+  icon: string;
+  quote: string;
+};
+type BossFight = {
+  event: {
+    key: string;
+    title: string;
+    startsAt: string;
+    endsAt: string;
+    maxHp: number;
+    active: boolean;
+    rewards: string[];
+  };
+  totalDamage: number;
+  remainingHp: number;
+  attacks: BossAttackOption[];
+  leaderboard: Array<OnlinePig & { damage: number; rank: number }>;
+  myDamage: number;
+};
 type SpinMode = "FAST" | "SLOW" | "RISK";
 type Giveaway = {
   id: string;
@@ -511,6 +550,7 @@ export default function App() {
     | "road"
     | "contract"
     | "crash"
+    | "boss"
     | "giveaways"
     | "inventory"
     | "profile"
@@ -560,6 +600,7 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [profile, setProfile] = useState<{
     stats: { opens: number; upgrades: number; itemCount: number };
+    topDrop: ProfileTopDrop;
     transactions: {
       id: string;
       type: string;
@@ -581,6 +622,9 @@ export default function App() {
     }[]
   >([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
+  const [dailyWinners, setDailyWinners] = useState<DailyWinner[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<OnlinePig[]>([]);
+  const [onlineOpen, setOnlineOpen] = useState(false);
   const [publicProfile, setPublicProfile] = useState<{
     id: string;
     username: string;
@@ -588,6 +632,7 @@ export default function App() {
     nickColor: string;
     createdAt: string;
     stats: { opens: number; upgrades: number; itemCount: number };
+    topDrop: ProfileTopDrop;
   } | null>(null);
   const [giveaways, setGiveaways] = useState<Giveaway[]>([]);
   const [collectionTitle, setCollectionTitle] = useState(
@@ -653,6 +698,12 @@ export default function App() {
     request("/api/leaderboard")
       .then(setLeaderboard)
       .catch(() => undefined);
+    request("/api/daily-winners")
+      .then(setDailyWinners)
+      .catch(() => undefined);
+    request("/api/online")
+      .then(setOnlineUsers)
+      .catch(() => undefined);
     request("/api/site-settings")
       .then((settings) => {
         if (settings.collectionTitle)
@@ -690,8 +741,9 @@ export default function App() {
     return () => window.removeEventListener("svino-sound", handleSound);
   }, [soundEnabled]);
   useEffect(() => {
-    const socket = io(API);
+    const socket = io(API, { auth: { token } });
     socket.on("online:count", setOnline);
+    socket.on("online:users", setOnlineUsers);
     socket.on("drop:revealed", (drop: Feed) =>
       setFeed((items) => [drop, ...items].slice(0, 6)),
     );
@@ -704,7 +756,7 @@ export default function App() {
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [token]);
   useEffect(() => {
     if (page === "leaderboard")
       request("/api/leaderboard")
@@ -1059,6 +1111,18 @@ export default function App() {
   const favoriteCases = cases.filter((item) =>
     favoriteCaseIds.includes(item.id),
   );
+  const openPublicProfile = (id: string) =>
+    request(`/api/users/${id}`)
+      .then(setPublicProfile)
+      .catch((error) =>
+        toast(
+          error instanceof Error ? error.message : "Профиль недоступен",
+        ),
+      );
+  const showOnlinePiggies = () => {
+    setOnlineOpen(true);
+    request("/api/online").then(setOnlineUsers).catch(() => undefined);
+  };
   return (
     <main className="app-shell">
       <div className="ambient ambient-one" />
@@ -1103,9 +1167,9 @@ export default function App() {
           >
             {soundEnabled ? "🔊" : "🔇"}
           </button>
-          <span className="online">
+          <button className="online" onClick={showOnlinePiggies}>
             <i /> {online} свинок онлайн
-          </span>
+          </button>
           {user ? (
             <>
               <button
@@ -1724,6 +1788,23 @@ export default function App() {
                 onClaim={claimDailyStreak}
               />
               <div className="profile-columns">
+                <section className="panel profile-top-drop">
+                  <p className="eyebrow">ЛИЧНЫЙ РЕКОРД</p>
+                  <h3>Топ-дроп</h3>
+                  {profile?.topDrop ? (
+                    <div>
+                      <img src={profile.topDrop.item.image} alt="" />
+                      <span>
+                        <b>{profile.topDrop.item.name}</b>
+                        <small>
+                          {profile.topDrop.item.wear} · {coins(profile.topDrop.item.price)} SC
+                        </small>
+                      </span>
+                    </div>
+                  ) : (
+                    <small>Открой кейс — здесь появится самый дорогой дроп.</small>
+                  )}
+                </section>
                 <section className="panel daily-case">
                   <span>🎁</span>
                   <div>
@@ -1858,7 +1939,13 @@ export default function App() {
       {page === "giveaways" && (
         <Giveaways giveaways={giveaways} onEnter={enterGiveaway} />
       )}
-      {page === "games" && <GamesHub onOpen={(game) => setPage(game)} />}
+      {page === "games" && (
+        <GamesHub
+          onOpen={(game) => setPage(game)}
+          dailyWinners={dailyWinners}
+          onOpenProfile={openPublicProfile}
+        />
+      )}
       {page === "battles" && (
         <BattlePage
           token={token}
@@ -1916,19 +2003,21 @@ export default function App() {
           toast={toast}
         />
       )}
+      {page === "boss" && (
+        <BossFightPage
+          token={token}
+          user={user}
+          onRequireAuth={() => setAuthOpen(true)}
+          onBalance={refreshPrivate}
+          toast={toast}
+          onOpenProfile={openPublicProfile}
+        />
+      )}
       {page === "leaderboard" && (
         <Leaderboard
           rows={leaderboard}
           currentUserId={user?.id}
-          onOpen={(id) =>
-            request(`/api/users/${id}`)
-              .then(setPublicProfile)
-              .catch((error) =>
-                toast(
-                  error instanceof Error ? error.message : "Профиль недоступен",
-                ),
-              )
-          }
+          onOpen={openPublicProfile}
         />
       )}
       {page === "admin" && user?.role === "ADMIN" && (
@@ -1988,6 +2077,16 @@ export default function App() {
         <PublicProfileModal
           profile={publicProfile}
           onClose={() => setPublicProfile(null)}
+        />
+      )}
+      {onlineOpen && (
+        <OnlinePiggiesModal
+          users={onlineUsers}
+          onClose={() => setOnlineOpen(false)}
+          onOpen={(id) => {
+            setOnlineOpen(false);
+            openPublicProfile(id);
+          }}
         />
       )}
       <button
@@ -2329,6 +2428,7 @@ function PublicProfileModal({
     nickColor: string;
     createdAt: string;
     stats: { opens: number; upgrades: number; itemCount: number };
+    topDrop: ProfileTopDrop;
   };
   onClose: () => void;
 }) {
@@ -2348,6 +2448,48 @@ function PublicProfileModal({
           <Stat value={profile.stats.opens} label="открытий" />
           <Stat value={profile.stats.upgrades} label="апгрейдов" />
           <Stat value={profile.stats.itemCount} label="предметов" />
+        </div>
+        <section className="public-top-drop">
+          <small>ЛУЧШИЙ ДРОП</small>
+          {profile.topDrop ? (
+            <div>
+              <img src={profile.topDrop.item.image} alt="" />
+              <span>
+                <b>{profile.topDrop.item.name}</b>
+                <em>{coins(profile.topDrop.item.price)} SC</em>
+              </span>
+            </div>
+          ) : <p>Этот поросёнок ещё не показал свой топ-дроп.</p>}
+        </section>
+      </section>
+    </div>
+  );
+}
+
+function OnlinePiggiesModal({
+  users,
+  onClose,
+  onOpen,
+}: {
+  users: OnlinePig[];
+  onClose: () => void;
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <div className="modal-backdrop online-piggies-backdrop">
+      <section className="auth-modal online-piggies-modal">
+        <button className="close" onClick={onClose}>×</button>
+        <p className="eyebrow">ЖИВАЯ СВИНОСТАЯ</p>
+        <h2>Кто сейчас на сайте</h2>
+        <p>Нажми на свинку, чтобы открыть её статистику и топ-дроп.</p>
+        <div>
+          {users.length ? users.map((pig) => (
+            <button key={pig.id} onClick={() => onOpen(pig.id)}>
+              <span>{pig.avatar || "🐷"}</span>
+              <b style={{ color: pig.nickColor }}>{pig.username}</b>
+              <em>Смотреть профиль →</em>
+            </button>
+          )) : <small>Сейчас в стае только гости. Авторизованные игроки появятся здесь сразу.</small>}
         </div>
       </section>
     </div>
@@ -3807,17 +3949,156 @@ function CrashPage({
   );
 }
 
+function BossFightPage({
+  token,
+  user,
+  onRequireAuth,
+  onBalance,
+  toast,
+  onOpenProfile,
+}: {
+  token: string;
+  user: User | null;
+  onRequireAuth: () => void;
+  onBalance: () => Promise<void>;
+  toast: (text: string) => void;
+  onOpenProfile: (id: string) => void;
+}) {
+  const [boss, setBoss] = useState<BossFight | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [hitKey, setHitKey] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const load = async () => {
+    try {
+      setBoss(await request("/api/boss-fight", token));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Не удалось загрузить босса");
+    }
+  };
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    const refresh = window.setInterval(() => void load(), 15_000);
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(refresh);
+    };
+  }, [token]);
+  const attack = async (attackKey: BossAttackOption["key"]) => {
+    if (!user) return onRequireAuth();
+    setBusyKey(attackKey);
+    try {
+      const data = await request("/api/boss-fight/attack", token, {
+        method: "POST",
+        body: JSON.stringify({ attackKey }),
+      });
+      setBoss(data.boss);
+      setHitKey((key) => key + 1);
+      playSiteSound("hit");
+      window.setTimeout(() => setHitKey(0), 720);
+      await onBalance();
+      toast(`${data.attack.label}: ${data.attack.damage.toLocaleString("ru-RU")} урона!`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Атака не прошла");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+  if (!boss) {
+    return <section className="page compact-page boss-page"><div className="boss-loading">Фалыч собирает QR-коды…</div></section>;
+  }
+  const secondsLeft = Math.max(0, Math.floor((new Date(boss.event.endsAt).getTime() - now) / 1_000));
+  const days = Math.floor(secondsLeft / 86_400);
+  const hours = Math.floor((secondsLeft % 86_400) / 3_600);
+  const minutes = Math.floor((secondsLeft % 3_600) / 60);
+  const hpPercent = Math.max(0, Math.min(100, (boss.remainingHp / boss.event.maxHp) * 100));
+  const lastQuote = boss.attacks.find((attack) => attack.key === busyKey)?.quote || "Фалыч опять просит оплатить QR на казик по кейсам…";
+  return (
+    <section className="page compact-page boss-page">
+      <header className="boss-page-head">
+        <div>
+          <p className="eyebrow">МЕСЯЧНЫЙ ИВЕНТ · ДО 19 ОКТЯБРЯ</p>
+          <h1>Битва с <strong>Фалычем</strong></h1>
+          <p>Отвечай на его просьбы оплатить QR по кейсам — каждая атака списывает SC и добавляет твой урон в месячный рейтинг.</p>
+        </div>
+        <button onClick={() => setRulesOpen((open) => !open)}>Как играть? {rulesOpen ? "⌃" : "⌄"}</button>
+      </header>
+      {rulesOpen && (
+        <div className="boss-rules">
+          <b>Шесть атак — шесть размеров урона.</b>
+          <span>Победители определяются по личному урону к концу события: 250 ₽, 150 ₽ и 100 ₽ за первые три места.</span>
+        </div>
+      )}
+      <div className={`boss-stage ${hitKey ? "hit" : ""}`}>
+        <div className="boss-stage-top">
+          <span>👹 ФАЛЫЧ · МЕСЯЧНЫЙ БОСС</span>
+          <b>{boss.event.active ? `${days}д ${hours}ч ${minutes}м до финала` : "ИВЕНТ ЗАВЕРШЁН"}</b>
+        </div>
+        <div className="boss-hp-wrap">
+          <div><b>HP ФАЛЫЧА</b><span>{boss.remainingHp.toLocaleString("ru-RU")} / {boss.event.maxHp.toLocaleString("ru-RU")}</span></div>
+          <div className="boss-hp"><i style={{ width: `${hpPercent}%` }} /></div>
+          <small>ВСЕГО НАНЕСЕНО · <strong>{boss.totalDamage.toLocaleString("ru-RU")} УРОНА</strong></small>
+        </div>
+        <div className="boss-portrait" aria-label="Фалыч">
+          <div className="boss-quote">“{lastQuote}”</div>
+          {hitKey > 0 && <img className="boss-impact" src="https://i.ibb.co/ccGG03nB/image.png" alt="Удар по боссу" />}
+        </div>
+        <div className="boss-attacks">
+          {boss.attacks.map((item) => (
+            <button
+              key={item.key}
+              disabled={!boss.event.active || Boolean(busyKey) || (user?.balance || 0) < item.cost * 100}
+              className={`boss-attack boss-${item.key.toLowerCase()}`}
+              onClick={() => attack(item.key)}
+            >
+              <span>{item.icon}</span>
+              <b>{item.label}</b>
+              <small>{item.cost.toLocaleString("ru-RU")} SC</small>
+              <em>−{item.damage.toLocaleString("ru-RU")} HP</em>
+            </button>
+          ))}
+        </div>
+      </div>
+      <section className="boss-bottom">
+        <div className="boss-my-damage">
+          <p className="eyebrow">ТВОЙ ВКЛАД</p>
+          <b>{boss.myDamage.toLocaleString("ru-RU")}</b>
+          <span>единиц урона</span>
+          <small>{user ? "Каждая атака сразу идёт в месячный рейтинг." : "Войди в аккаунт, чтобы участвовать."}</small>
+        </div>
+        <div className="boss-prizes">
+          <p className="eyebrow">ПРИЗОВОЙ ТОП</p>
+          {boss.event.rewards.map((reward, index) => <span key={reward}><b>#{index + 1}</b>{reward}</span>)}
+        </div>
+        <div className="boss-leaderboard">
+          <p className="eyebrow">ТОП УРОНА ЗА МЕСЯЦ</p>
+          {boss.leaderboard.length ? boss.leaderboard.slice(0, 8).map((entry) => (
+            <button key={entry.id} onClick={() => onOpenProfile(entry.id)}>
+              <i>#{entry.rank}</i><span>{entry.avatar || "🐷"}</span><b style={{ color: entry.nickColor }}>{entry.username}</b><strong>{entry.damage.toLocaleString("ru-RU")}</strong>
+            </button>
+          )) : <small>Будь первым, кто даст Фалычу отпор.</small>}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function GamesHub({
   onOpen,
+  dailyWinners,
+  onOpenProfile,
 }: {
   onOpen: (
     game:
-      "upgrade" | "battles" | "naval" | "mines" | "road" | "contract" | "crash",
+      | "upgrade" | "battles" | "naval" | "mines" | "road" | "contract" | "crash" | "boss",
   ) => void;
+  dailyWinners: DailyWinner[];
+  onOpenProfile: (id: string) => void;
 }) {
   const games: Array<{
     id:
-      "upgrade" | "battles" | "naval" | "mines" | "road" | "contract" | "crash";
+      | "upgrade" | "battles" | "naval" | "mines" | "road" | "contract" | "crash" | "boss";
     icon: string;
     eyebrow: string;
     title: string;
@@ -3880,6 +4161,14 @@ function GamesHub({
       text: "Поставь до старта и успей забрать множитель до краша.",
       action: "К крашу",
     },
+    {
+      id: "boss",
+      icon: "👹",
+      eyebrow: "MONTHLY BOSS EVENT",
+      title: "Битва с Фалычем",
+      text: "Бей босса, копи личный урон и попади в призовой топ месяца.",
+      action: "В битву",
+    },
   ];
   return (
     <section className="page compact-page games-hub">
@@ -3889,9 +4178,25 @@ function GamesHub({
           Выбери свою <strong>игру</strong>
         </h1>
         <p>
-          Семь режимов, один свинобаланс и настоящая конкуренция с игроками.
+          Восемь режимов, один свинобаланс и настоящая конкуренция с игроками.
         </p>
       </div>
+      <section className="daily-winners-strip">
+        <div>
+          <p className="eyebrow">СЕГОДНЯ ПОДНЯЛИ БОЛЬШЕ ВСЕХ</p>
+          <h2>Топ подъёма за день</h2>
+        </div>
+        <div className="daily-winners-list">
+          {dailyWinners.length ? dailyWinners.slice(0, 3).map((winner) => (
+            <button key={winner.id} onClick={() => onOpenProfile(winner.id)}>
+              <i>#{winner.rank}</i>
+              <span>{winner.avatar || "🐷"}</span>
+              <b style={{ color: winner.nickColor }}>{winner.username}</b>
+              <strong>+{coins(winner.raised)} SC</strong>
+            </button>
+          )) : <small>Сегодня ещё никто не поднял банк. Возможно, это будешь ты.</small>}
+        </div>
+      </section>
       <div className="games-grid">
         {games.map((game) => (
           <button
@@ -5483,10 +5788,6 @@ function UpgradeDial({
   // The arrow itself moves; the green success segment is fixed below.
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.landingAngle || 0;
-  // Every risk-spin waypoint is derived from the exact protected landing
-  // angle. This keeps the arrow moving in one direction and decelerating at
-  // every stage, regardless of where its final point is on the dial.
-  const riskTurn = (part: number) => `${Math.round(endAngle * part)}deg`;
   // Do not attach an outcome class while the arrow is moving: a green centre
   // used to reveal a win before the animation had finished.
   const outcomeClass =
@@ -5498,11 +5799,6 @@ function UpgradeDial({
         {
           "--success-size": `${safeChance * 3.6}deg`,
           "--needle-end": `${endAngle}deg`,
-          "--risk-turn-1": riskTurn(0.54),
-          "--risk-turn-2": riskTurn(0.78),
-          "--risk-turn-3": riskTurn(0.9),
-          "--risk-turn-4": riskTurn(0.965),
-          "--risk-turn-5": riskTurn(0.993),
           "--motion-duration": `${spinDuration[mode]}ms`,
         } as React.CSSProperties
       }
