@@ -785,6 +785,10 @@ function contractMultiplier() {
   return 4.76 + crypto.randomInt(525) / 100;
 }
 const contractPendingKey = 'contract-pending-v1';
+// PostgreSQL INT is still used for an individual catalogue price. A contract
+// stake may be much bigger than one item (for example after adding a rare
+// sticker), so its search ceiling must never be passed to SQL unbounded.
+const maxCatalogueItemPrice = 2_147_483_647;
 type ContractPending = { version: 1; inventoryId: string; stake: number; multiplier: number; riskMode: boolean };
 function isContractPending(value: unknown): value is ContractPending {
   return Boolean(value && typeof value === 'object' && (value as ContractPending).version === 1 && typeof (value as ContractPending).inventoryId === 'string');
@@ -810,7 +814,7 @@ app.post('/api/contracts', auth, async (req: AuthedRequest, res) => {
       const sources = await tx.inventory.findMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: { select: itemSelect } } });
       if (sources.length !== sourceInventoryIds.length) throw new Error('Один из скинов уже недоступен. Обнови инвентарь.');
       const stake = sources.reduce((sum, source) => sum + source.item.price, 0);
-      const candidates = await tx.item.findMany({ where: { active: true, price: { gte: Math.ceil(stake * 0.10), lte: Math.floor(stake * 10) } }, select: itemSelect });
+      const candidates = await tx.item.findMany({ where: { active: true, price: { gte: Math.min(maxCatalogueItemPrice, Math.ceil(stake * 0.10)), lte: Math.min(maxCatalogueItemPrice, Math.floor(stake * 10)) } }, select: itemSelect });
       if (!candidates.length) throw new Error('Для такой суммы пока нет подходящего результата контракта.');
       const winner = contractWinner(candidates, stake);
       const marked = await tx.inventory.updateMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
@@ -1057,7 +1061,7 @@ app.get('/api/battles', auth, async (req: AuthedRequest, res) => {
 app.get('/api/battles/:id', auth, async (req: AuthedRequest, res) => { const battle = await battleView(req.params.id, req.session!.id); if (!battle || (battle.private && !battle.isMine && battle.creatorId !== req.session!.id)) return res.status(404).json({ error: 'Баттл не найден.' }); res.json(battle); });
 app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
   const { caseIds, playerLimit = 2, mode = 'NORMAL', private: privateBattle = false, fast = false } = req.body ?? {};
-  if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 12 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode) || typeof fast !== 'boolean') return res.status(400).json({ error: 'Выбери от 1 до 12 кейсов, 2–4 игроков и режим.' });
+  if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 30 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode) || typeof fast !== 'boolean') return res.status(400).json({ error: 'Выбери от 1 до 30 кейсов, 2–4 игроков и режим.' });
   try {
     const created = await prisma.$transaction(async (tx) => {
       // Magic cases intentionally conceal their pool and can reveal several

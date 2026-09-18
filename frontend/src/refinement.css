@@ -128,6 +128,20 @@
 .battle-jackpot-finale.spinning:before{display:none!important}
 .battle-jackpot-finale .jackpot-pointer{top:89px!important}
 
+/* The endgame takes over in clear mechanical steps instead of simply hiding
+   the opened cases. This keeps the relation between players and their tickets
+   visible right up to the final spin. */
+.battle-case-window.jackpot-focus{position:relative;min-height:430px;overflow:hidden}
+.battle-case-window.jackpot-focus>.battle-rounds-strip,.battle-case-window.jackpot-focus>.battle-round-status,.battle-case-window.jackpot-focus>.battle-active-case,.battle-case-window.jackpot-focus>.battle-arena{display:flex!important;pointer-events:none;animation:jackpot-deck-away .58s cubic-bezier(.2,.8,.2,1) forwards}
+.battle-case-window.jackpot-focus>.battle-arena{display:grid!important;transform-origin:center}
+.battle-case-window.jackpot-focus .battle-jackpot-finale{position:absolute;z-index:5;left:50%;top:50%;margin:0;transform:translate(-50%,-50%);width:min(840px,calc(100% - 24px));animation:jackpot-machine-in .6s .32s cubic-bezier(.16,.9,.25,1) both}
+.battle-case-window.jackpot-focus .battle-jackpot-finale.finished{animation:none;transform:translate(-50%,-50%)}
+@keyframes jackpot-deck-away{0%{opacity:1;transform:translateY(0) scale(1)}100%{opacity:0;transform:translateY(56px) scale(.82);filter:blur(3px)}}
+@keyframes jackpot-machine-in{0%{opacity:0;transform:translate(-50%,-42%) scale(.72);filter:blur(6px)}65%{opacity:1;transform:translate(-50%,-50%) scale(1.035)}100%{opacity:1;transform:translate(-50%,-50%) scale(1);filter:none}}
+
+.sound-toggle{display:grid;place-items:center;width:34px;height:34px;border:1px solid #7e3b5f;border-radius:10px;background:#281025;color:#dca1c2;cursor:pointer;font-size:15px;transition:transform .18s,border-color .18s,box-shadow .18s}.sound-toggle:hover{transform:translateY(-2px);border-color:#ff78bd}.sound-toggle.on{border-color:#ff75ba;background:linear-gradient(145deg,#6c2451,#35112e);box-shadow:0 0 16px #ff4da64a;color:#fff3a9}
+@media(max-width:680px){.sound-toggle{width:30px;height:30px}.battle-case-window.jackpot-focus .battle-jackpot-finale{width:calc(100% - 12px)}}
+
 /* The hidden contract reward is deliberately a large, clean scratch card. */
 .contract-prize-art{width:min(290px,76vw)!important;aspect-ratio:1;height:auto!important}
 .contract-scratch small{display:none!important}
