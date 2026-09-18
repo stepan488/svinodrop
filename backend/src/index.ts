@@ -312,18 +312,20 @@ const dailyStreakRewards: DailyStreakReward[] = [
 function isDailyStreakRecord(value: unknown): value is DailyStreakRecord {
   if (!value || typeof value !== 'object') return false;
   const record = value as Partial<DailyStreakRecord>;
-  return record.version === 1 && Number.isInteger(record.day) && Number(record.day) >= 1 && Number(record.day) <= 14 && typeof record.claimedDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(record.claimedDay);
+  return record.version === 1 && Number.isInteger(record.day) && Number(record.day) >= 1 && Number(record.day) <= 1_000_000 && typeof record.claimedDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(record.claimedDay);
 }
 function calendarDayDistance(from: string, to: string) {
   const toUtc = (value: string) => { const [year, month, day] = value.split('-').map(Number); return Date.UTC(year, month - 1, day); };
   return Math.round((toUtc(to) - toUtc(from)) / 86_400_000);
 }
 function dailyStreakStatus(record: DailyStreakRecord | null, today = kyivDayKey()) {
-  if (!record) return { available: true, claimDay: 1, progressDay: 0, reset: false, today };
+  const rewardDay = (day: number) => ((day - 1) % dailyStreakRewards.length) + 1;
+  if (!record) return { available: true, claimDay: 1, rewardDay: 1, progressDay: 0, progressRewardDay: 0, reset: false, today };
   const distance = calendarDayDistance(record.claimedDay, today);
-  if (distance === 0) return { available: false, claimDay: record.day === 14 ? 1 : record.day + 1, progressDay: record.day, reset: false, today };
-  if (distance === 1) return { available: true, claimDay: record.day === 14 ? 1 : record.day + 1, progressDay: record.day, reset: false, today };
-  return { available: true, claimDay: 1, progressDay: 0, reset: true, today };
+  const nextDay = record.day + 1;
+  if (distance === 0) return { available: false, claimDay: nextDay, rewardDay: rewardDay(nextDay), progressDay: record.day, progressRewardDay: rewardDay(record.day), reset: false, today };
+  if (distance === 1) return { available: true, claimDay: nextDay, rewardDay: rewardDay(nextDay), progressDay: record.day, progressRewardDay: rewardDay(record.day), reset: false, today };
+  return { available: true, claimDay: 1, rewardDay: 1, progressDay: 0, progressRewardDay: 0, reset: true, today };
 }
 function dailyStreakView(status: ReturnType<typeof dailyStreakStatus>, items: DailyStreakItem[]) {
   const itemById = new Map(items.map((item) => [item.id, item]));
@@ -662,18 +664,18 @@ app.post('/api/daily-streak/claim', auth, async (req: AuthedRequest, res) => {
       const previous = isDailyStreakRecord(entry?.response) ? entry!.response : null;
       const status = dailyStreakStatus(previous);
       if (!status.available) throw new Error('Сегодняшняя награда уже забрана. Возвращайся завтра!');
-      const reward = dailyStreakRewards[status.claimDay - 1];
-      let responseReward: { day: number; type: 'COINS'; amount: number } | { day: number; type: 'ITEM'; item: DailyStreakItem };
+      const reward = dailyStreakRewards[status.rewardDay - 1];
+      let responseReward: { day: number; rewardDay: number; type: 'COINS'; amount: number } | { day: number; rewardDay: number; type: 'ITEM'; item: DailyStreakItem };
       if (reward.type === 'COINS') {
         await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: reward.amount } } });
-        await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_COINS', amount: reward.amount, description: `Ежедневная серия · день ${status.claimDay}/14` } });
-        responseReward = { day: status.claimDay, type: 'COINS', amount: reward.amount };
+        await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_COINS', amount: reward.amount, description: `Ежедневная серия · день ${status.claimDay} · награда круга ${status.rewardDay}/14` } });
+        responseReward = { day: status.claimDay, rewardDay: status.rewardDay, type: 'COINS', amount: reward.amount };
       } else {
         const item = await tx.item.findFirst({ where: { id: reward.itemId, active: true }, select: itemSelect });
         if (!item) throw new Error('Награда для этого дня временно недоступна.');
         await tx.inventory.create({ data: { userId: req.session!.id, itemId: item.id, obtainedFrom: `daily-streak:${status.claimDay}`, revealed: true } });
-        await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_ITEM', amount: 0, description: `Ежедневная серия · день ${status.claimDay}/14 · «${item.name}»` } });
-        responseReward = { day: status.claimDay, type: 'ITEM', item };
+        await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_ITEM', amount: 0, description: `Ежедневная серия · день ${status.claimDay} · награда круга ${status.rewardDay}/14 · «${item.name}»` } });
+        responseReward = { day: status.claimDay, rewardDay: status.rewardDay, type: 'ITEM', item };
       }
       const next: DailyStreakRecord = { version: 1, day: status.claimDay, claimedDay: status.today };
       await tx.opening.upsert({ where: { userId_key: { userId: req.session!.id, key: dailyStreakKey } }, create: { userId: req.session!.id, key: dailyStreakKey, response: next }, update: { response: next } });

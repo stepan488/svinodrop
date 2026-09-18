@@ -159,7 +159,9 @@ type DailyStreakReward =
 type DailyStreak = {
   available: boolean;
   claimDay: number;
+  rewardDay: number;
   progressDay: number;
+  progressRewardDay: number;
   reset: boolean;
   today: string;
   cycleLength: number;
@@ -360,21 +362,23 @@ function DailyStreakCalendar({
           </p>
         </div>
         <div className="streak-counter">
-          <small>ТЕКУЩИЙ ДЕНЬ</small>
-          <b>{streak.available ? streak.claimDay : streak.progressDay}/14</b>
+          <small>ДНЕЙ В СЕРИИ</small>
+          <b>{streak.available ? streak.claimDay : streak.progressDay}</b>
         </div>
       </header>
       <div className="streak-days">
         {streak.rewards.map((reward) => {
-          const claimed = !streak.reset && reward.day <= streak.progressDay;
-          const current = streak.available && reward.day === streak.claimDay;
+          const current = streak.available && reward.day === streak.rewardDay;
+          const claimed = !current && !streak.reset && reward.day <= streak.progressRewardDay;
           const itemName = reward.type === "ITEM" ? reward.item?.name : null;
           return (
             <article
               className={`${claimed ? "claimed " : ""}${current ? "current" : ""}`}
               key={reward.day}
             >
-              <small>ДЕНЬ {String(reward.day).padStart(2, "0")}</small>
+              <small>
+                ДЕНЬ {String(current ? streak.claimDay : reward.day).padStart(2, "0")}
+              </small>
               <div className="streak-reward-art">
                 {reward.type === "ITEM" && reward.item ? (
                   <img src={reward.item.image} alt="" />
@@ -396,7 +400,7 @@ function DailyStreakCalendar({
       <footer>
         <span>
           {streak.available
-            ? `Сегодня доступен подарок за день ${streak.claimDay}.`
+            ? `Сегодня доступен подарок за день ${streak.claimDay} (награда ${streak.rewardDay}/14).`
             : `День ${streak.progressDay} уже забран — следующий подарок завтра.`}
         </span>
         <button
