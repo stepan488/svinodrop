@@ -4042,7 +4042,6 @@ function BossFightPage({
         </div>
         <div className="boss-portrait" aria-label="Фалыч">
           <div className="boss-quote">“{lastQuote}”</div>
-          {hitKey > 0 && <img className="boss-impact" src="https://i.ibb.co/ccGG03nB/image.png" alt="Удар по боссу" />}
         </div>
         <div className="boss-attacks">
           {boss.attacks.map((item) => (

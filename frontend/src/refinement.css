@@ -215,3 +215,13 @@
 
 /* Keep the boss quote and hit flash above the supplied arena image. */
 .boss-portrait{z-index:1}
+
+/* Ударный кадр целиком заменяет арену, а HP вынесен в угол — лицо босса не закрывается. */
+.boss-stage.hit{background-image:linear-gradient(180deg,#28060bb3,#17070cc9),url('https://i.ibb.co/ccGG03nB/image.png');background-position:center;background-size:cover}
+.boss-stage-top{position:relative;z-index:4}
+.boss-hp-wrap{position:absolute;z-index:4;top:56px;left:20px;width:min(355px,39%);margin:0;border:1px solid #a75842;border-radius:12px;padding:8px 10px;background:#1b0912d9;box-shadow:0 8px 22px #0009;text-align:left}
+.boss-hp{height:12px;margin:6px 0 5px}
+.boss-hp-wrap small{display:block}
+.boss-attacks{z-index:3}
+@media(max-width:850px){.boss-hp-wrap{top:54px;width:min(355px,52%)}}
+@media(max-width:560px){.boss-hp-wrap{top:47px;left:14px;width:calc(100% - 28px);padding:7px 8px}.boss-portrait{inset:108px 0 212px}}
