@@ -812,12 +812,12 @@ app.post('/api/road/start', auth, async (req: AuthedRequest, res) => {
 });
 app.post('/api/road/step', auth, async (req: AuthedRequest, res) => {
   const choice = Number(req.body?.choice);
-  if (!Number.isInteger(choice) || choice < 0 || choice > 3) return res.status(400).json({ error: 'Выбери одну из четырёх платформ.' });
+  if (!Number.isInteger(choice) || choice < 0 || choice >= roadMultipliers.length) return res.status(400).json({ error: 'Выбери следующую платформу на дороге.' });
   try {
     const game = await prisma.$transaction(async (tx) => {
       const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
       if (!isRoadRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Начни новый забег.');
-      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_500 : 7_000);
+      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_500 : 8_000);
       const steps = safe ? [...entry.response.steps, choice] : entry.response.steps;
       const won = safe && steps.length >= roadMultipliers.length;
       const next: RoadRecord = { ...entry.response, steps, last: { choice, safe }, status: safe ? won ? 'WON' : 'PLAYING' : 'LOST', completedAt: safe && !won ? undefined : new Date().toISOString() };

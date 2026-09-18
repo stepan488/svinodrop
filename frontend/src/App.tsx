@@ -2203,12 +2203,6 @@ const roadMultipliers = [
   1.08, 1.18, 1.3, 1.46, 1.66, 1.92, 2.26, 2.72, 3.38, 4.35, 5.82, 8.1, 12.1,
   20.6, 48,
 ];
-const roadPlatformLabels = [
-  "Сочный шорткат",
-  "Золотой рельс",
-  "Свинский мост",
-  "Бекон-экспресс",
-];
 const roadPigImage =
   "https://i.ibb.co/yBRpJjPv/ae3fd723-35f3-40aa-9ac4-3703fd5c274f.png";
 const roadPlatformImage =
@@ -2232,6 +2226,7 @@ function PigRoadPage({
   const [busy, setBusy] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [roundKey, setRoundKey] = useState(0);
+  const [roadShift, setRoadShift] = useState(false);
   const playing = game?.status === "PLAYING";
   const stakeCoins = Math.floor(Number(stake) || 0);
   const nextMultiplier = playing
@@ -2246,6 +2241,10 @@ function PigRoadPage({
       const data = await request("/api/road", token);
       setGame(data.game);
       setRoundKey((key) => key + 1);
+      if (data.game.last?.safe) {
+        setRoadShift(true);
+        window.setTimeout(() => setRoadShift(false), 680);
+      }
     } catch (error) {
       toast(
         error instanceof Error
@@ -2320,7 +2319,8 @@ function PigRoadPage({
       setBusy(false);
     }
   };
-  const resolvedChoice = game?.last?.choice;
+  const completedSteps = game?.steps.length || 0;
+  const visibleRoadSteps = [completedSteps - 1, completedSteps, completedSteps + 1, completedSteps + 2];
   return (
     <section className="page compact-page road-page">
       <header className="road-hero">
@@ -2342,9 +2342,9 @@ function PigRoadPage({
         <div className="road-rules">
           <b>Средний режим · до ×48.</b>
           <span>
-            Ставь 500–555 000 SC, выбирай одну из четырёх платформ и забирай
-            выигрыш после любого безопасного шага. Следующие платформы всегда
-            видны на карте дороги.
+            Ставь 500–555 000 SC, нажимай следующую платформу и забирай
+            выигрыш после любого безопасного шага. Дальнейший путь всегда
+            виден на карте дороги.
           </span>
         </div>
       )}
@@ -2392,7 +2392,7 @@ function PigRoadPage({
               </span>
             ))}
           </div>
-          <div className="road-pig-lane">
+          <div className={`road-pig-lane ${game ? "in-run" : ""}`}>
             <img
               className="road-pig"
               src={roadPigImage}
@@ -2400,20 +2400,22 @@ function PigRoadPage({
             />
             <div className="road-finish">🏁</div>
           </div>
-          <div className="road-platform-strip" key={roundKey}>
-            {roadPlatformLabels.map((label, index) => {
-              const selected = resolvedChoice === index;
-              const state = selected
-                ? game?.last?.safe
-                  ? "safe"
-                  : "mine"
-                : "";
+          <div className={`road-platform-strip ${roadShift ? "slide-forward" : ""}`} key={roundKey}>
+            {visibleRoadSteps.map((stepIndex, index) => {
+              const start = stepIndex < 0;
+              const passed = stepIndex >= 0 && stepIndex < completedSteps;
+              const standing = passed && stepIndex === completedSteps - 1;
+              const active = playing && stepIndex === completedSteps;
+              const failed = game?.status === "LOST" && game.last?.choice === stepIndex;
+              const future = stepIndex > completedSteps;
+              const state = failed ? "mine" : passed ? "safe" : active ? "active" : future ? "future" : "start";
+              const stepMultiplier = start ? 1 : roadMultipliers[Math.min(roadMultipliers.length - 1, stepIndex)] || 48;
               return (
                 <button
-                  disabled={!playing || busy}
-                  onClick={() => step(index)}
+                  disabled={!active || busy}
+                  onClick={() => step(stepIndex)}
                   className={`road-platform ${state}`}
-                  key={label}
+                  key={`${stepIndex}-${index}`}
                 >
                   <img
                     className="road-platform-art"
@@ -2421,10 +2423,11 @@ function PigRoadPage({
                     alt="Платформа"
                   />
                   <span className="road-platform-grate">
-                    {selected ? (game?.last?.safe ? "🐷" : "💣") : "✦"}
+                    {standing ? "🐷" : failed ? "💣" : active ? "➜" : start ? "🐷" : "✦"}
                   </span>
-                  <b>{label}</b>
-                  <em>{multiplier(nextMultiplier)}</em>
+                  {standing && <img className="road-run-pig" src={roadPigImage} alt="Свинья на пройденной платформе"/>}
+                  <b>{standing ? "ПРОЙДЕНО" : failed ? "ЛОВУШКА" : active ? "СДЕЛАТЬ ШАГ" : start ? "СТАРТ" : "ДАЛЬШЕ"}</b>
+                  <em>{multiplier(stepMultiplier)}</em>
                 </button>
               );
             })}
