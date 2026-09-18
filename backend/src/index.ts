@@ -298,6 +298,7 @@ const bossEvent = {
   endsAt: new Date('2026-10-19T23:59:59.999+03:00'),
   maxHp: 1_000_000_000,
 };
+const bossAdminUsername = 'pigadmin';
 const bossAttacks = [
   { key: 'SEND', label: 'Послать Фалыча', cost: 500, damage: 500, icon: '💬', quote: 'Фалыч, QR на кейсы сегодня не оплатим.' },
   { key: 'BAIT', label: 'Забайтить и не оплатить', cost: 2_500, damage: 2_500, icon: '🎣', quote: '«Сейчас оплачу» — и тишина в ответ.' },
@@ -328,9 +329,15 @@ async function dailyWinnersView() {
   return rows.map((row, index) => ({ ...byId.get(row.userId), raised: Number(row._sum.amount || 0), rank: index + 1 })).filter((row): row is { id: string; username: string; avatar: string | null; nickColor: string; raised: number; rank: number } => Boolean(row.id));
 }
 async function bossFightView(userId?: string) {
+  const excludedUsers = await prisma.user.findMany({
+    where: { username: { equals: bossAdminUsername, mode: 'insensitive' } },
+    select: { id: true },
+  });
+  const excludedIds = excludedUsers.map((user) => user.id);
+  const bossWhere = { eventKey: bossEvent.key, ...(excludedIds.length ? { userId: { notIn: excludedIds } } : {}) };
   const [total, grouped] = await Promise.all([
-    prisma.bossAttack.aggregate({ where: { eventKey: bossEvent.key }, _sum: { damage: true } }),
-    prisma.bossAttack.groupBy({ by: ['userId'], where: { eventKey: bossEvent.key }, _sum: { damage: true }, orderBy: { _sum: { damage: 'desc' } }, take: 50 }),
+    prisma.bossAttack.aggregate({ where: bossWhere, _sum: { damage: true } }),
+    prisma.bossAttack.groupBy({ by: ['userId'], where: bossWhere, _sum: { damage: true }, orderBy: { _sum: { damage: 'desc' } }, take: 50 }),
   ]);
   const users = await prisma.user.findMany({ where: { id: { in: grouped.map((entry) => entry.userId) }, isBanned: false }, select: { id: true, username: true, avatar: true, nickColor: true } });
   const byId = new Map(users.map((user) => [user.id, user]));
@@ -551,6 +558,7 @@ app.post('/api/boss-fight/attack', auth, async (req: AuthedRequest, res) => {
   try {
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      if (user.username.toLowerCase() === bossAdminUsername) throw new Error('Админский аккаунт не участвует в «Битве с Фалычем».');
       const spent = attack.cost * 100;
       if (user.balance < spent) throw new Error('Недостаточно свинокоинов для этой атаки.');
       const nextUser = await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: spent } } });

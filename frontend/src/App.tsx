@@ -320,10 +320,36 @@ function playSynthSound(sound: SiteSound) {
     oscillator.start(now);
     oscillator.stop(now + duration + 0.03);
   }
+  if (sound === "hit") {
+    const thump = context.createOscillator();
+    const thumpGain = context.createGain();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(145, now);
+    thump.frequency.exponentialRampToValueAtTime(42, now + 0.23);
+    thumpGain.gain.setValueAtTime(0.0001, now);
+    thumpGain.gain.exponentialRampToValueAtTime(0.17, now + 0.008);
+    thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    thump.connect(thumpGain).connect(context.destination);
+    thump.start(now);
+    thump.stop(now + 0.3);
+
+    const noise = context.createBufferSource();
+    const noiseGain = context.createGain();
+    const buffer = context.createBuffer(1, Math.floor(context.sampleRate * 0.12), context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < data.length; index += 1) data[index] = (Math.random() * 2 - 1) * (1 - index / data.length);
+    noise.buffer = buffer;
+    noiseGain.gain.setValueAtTime(0.09, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+    noise.connect(noiseGain).connect(context.destination);
+    noise.start(now);
+    window.setTimeout(() => void context.close(), 400);
+    return;
+  }
   soundTones[sound].forEach((frequency, index) => {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
-    oscillator.type = sound === "shot" || sound === "hit" ? "square" : "sine";
+    oscillator.type = sound === "shot" ? "square" : "sine";
     oscillator.frequency.setValueAtTime(frequency, now + index * 0.075);
     gain.gain.setValueAtTime(0.0001, now + index * 0.075);
     gain.gain.exponentialRampToValueAtTime(0.075, now + index * 0.075 + 0.012);
