@@ -776,6 +776,79 @@ app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш' }); }
 });
 
+// Piggy Road deliberately resolves one platform at a time on the server. The
+// client receives only the selected platform result, never a pre-built safe path.
+type RoadStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT' | 'WON';
+type RoadRecord = { version: 1; status: RoadStatus; wager: number; steps: number[]; last?: { choice: number; safe: boolean }; createdAt: string; completedAt?: string };
+const roadOpeningKey = 'piggy-road-active-v1';
+const roadMultipliers = [1.18, 1.42, 1.72, 2.1, 2.64, 3.38, 4.45, 6.1, 8.75, 13.2, 22.5, 48];
+const isRoadRecord = (value: unknown): value is RoadRecord => Boolean(value && typeof value === 'object' && (value as RoadRecord).version === 1 && Array.isArray((value as RoadRecord).steps) && typeof (value as RoadRecord).wager === 'number');
+const roadMultiplier = (game: RoadRecord) => game.steps.length ? roadMultipliers[Math.min(roadMultipliers.length - 1, game.steps.length - 1)] : 1;
+const roadPayout = (game: RoadRecord) => Math.round(game.wager * roadMultiplier(game));
+const publicRoad = (game: RoadRecord) => ({ status: game.status, wager: game.wager, steps: game.steps, last: game.last, multiplier: roadMultiplier(game), payout: game.status === 'LOST' ? 0 : roadPayout(game), maxSteps: roadMultipliers.length });
+
+app.get('/api/road', auth, async (req: AuthedRequest, res) => {
+  const entry = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
+  const game = entry && isRoadRecord(entry.response) ? entry.response : null;
+  res.json({ game: game ? publicRoad(game) : null });
+});
+app.post('/api/road/start', auth, async (req: AuthedRequest, res) => {
+  const wager = money(req.body?.wager);
+  if (!wager || wager < 50_000 || wager > 55_500_000) return res.status(400).json({ error: 'Ставка — от 500 до 555 000 SC.' });
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
+      if (current && isRoadRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущий забег.');
+      const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+      if (user.balance < wager) throw new Error('Недостаточно свинокоинов для ставки.');
+      const next: RoadRecord = { version: 1, status: 'PLAYING', wager, steps: [], createdAt: new Date().toISOString() };
+      await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: wager } } });
+      await tx.transaction.create({ data: { userId: user.id, type: 'ROAD_BET', amount: -wager, description: 'Ставка в «Свиной дороге»' } });
+      await tx.opening.upsert({ where: { userId_key: { userId: user.id, key: roadOpeningKey } }, create: { userId: user.id, key: roadOpeningKey, response: next }, update: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.status(201).json({ game: publicRoad(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось начать забег.' }); }
+});
+app.post('/api/road/step', auth, async (req: AuthedRequest, res) => {
+  const choice = Number(req.body?.choice);
+  if (!Number.isInteger(choice) || choice < 0 || choice > 3) return res.status(400).json({ error: 'Выбери одну из четырёх платформ.' });
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
+      if (!isRoadRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Начни новый забег.');
+      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_200 : 7_000);
+      const steps = safe ? [...entry.response.steps, choice] : entry.response.steps;
+      const won = safe && steps.length >= roadMultipliers.length;
+      const next: RoadRecord = { ...entry.response, steps, last: { choice, safe }, status: safe ? won ? 'WON' : 'PLAYING' : 'LOST', completedAt: safe && !won ? undefined : new Date().toISOString() };
+      if (won) {
+        const payout = roadPayout(next);
+        await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
+        await tx.transaction.create({ data: { userId: req.session!.id, type: 'ROAD_WIN', amount: payout, description: `Свиная дорога пройдена · ×${roadMultiplier(next)}` } });
+      }
+      await tx.opening.update({ where: { id: entry.id }, data: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ game: publicRoad(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Шаг не выполнен.' }); }
+});
+app.post('/api/road/cashout', auth, async (req: AuthedRequest, res) => {
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
+      if (!isRoadRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Нет активного забега для вывода.');
+      if (!entry.response.steps.length) throw new Error('Сначала сделай хотя бы один безопасный шаг.');
+      const next: RoadRecord = { ...entry.response, status: 'CASHED_OUT', completedAt: new Date().toISOString() };
+      const payout = roadPayout(next);
+      await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'ROAD_CASHOUT', amount: payout, description: `Вывод из «Свиной дороги» · ×${roadMultiplier(next)}` } });
+      await tx.opening.update({ where: { id: entry.id }, data: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ game: publicRoad(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш.' }); }
+});
+
 function contractMultiplier() {
   const roll = crypto.randomInt(10_000);
   if (roll < 4_200) return 0.12 + crypto.randomInt(53) / 100;
