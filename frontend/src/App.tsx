@@ -5552,12 +5552,6 @@ function UpgradeDial({
           aria-hidden="true"
         />
       </div>
-      {mode === "RISK" && phase === "spinning" && (
-        <div className="sd-risk-suspense" aria-live="polite">
-          <span>В АЗАРТЕ</span>
-          <b>ИЩЕМ СЧАСТЛИВУЮ ЗОНУ…</b>
-        </div>
-      )}
     </div>
   );
 }
