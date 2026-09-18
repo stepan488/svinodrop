@@ -873,7 +873,10 @@ app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
 type RoadStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT' | 'WON';
 type RoadRecord = { version: 1; status: RoadStatus; wager: number; steps: number[]; last?: { choice: number; safe: boolean }; createdAt: string; completedAt?: string };
 const roadOpeningKey = 'piggy-road-active-v1';
-const roadMultipliers = [1.08, 1.18, 1.3, 1.46, 1.66, 1.92, 2.26, 2.72, 3.38, 4.35, 5.82, 8.1, 12.1, 20.6, 48];
+// Twenty platforms make the full run feel like a real journey. The outer
+// platforms are deliberately the risky gate and finish; every middle jump is
+// the safer 80% step.
+const roadMultipliers = [1.05, 1.11, 1.18, 1.27, 1.38, 1.51, 1.67, 1.86, 2.1, 2.4, 2.78, 3.28, 3.94, 4.85, 6.15, 8.05, 10.95, 15.8, 25.1, 48];
 const isRoadRecord = (value: unknown): value is RoadRecord => Boolean(value && typeof value === 'object' && (value as RoadRecord).version === 1 && Array.isArray((value as RoadRecord).steps) && typeof (value as RoadRecord).wager === 'number');
 const roadMultiplier = (game: RoadRecord) => game.steps.length ? roadMultipliers[Math.min(roadMultipliers.length - 1, game.steps.length - 1)] : 1;
 const roadPayout = (game: RoadRecord) => Math.round(game.wager * roadMultiplier(game));
@@ -909,7 +912,8 @@ app.post('/api/road/step', auth, async (req: AuthedRequest, res) => {
     const game = await prisma.$transaction(async (tx) => {
       const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
       if (!isRoadRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Начни новый забег.');
-      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_500 : 7_500);
+      const stepNumber = entry.response.steps.length;
+      const safe = crypto.randomInt(10_000) < (stepNumber === 0 || stepNumber === roadMultipliers.length - 1 ? 4_500 : 8_000);
       const steps = safe ? [...entry.response.steps, choice] : entry.response.steps;
       const won = safe && steps.length >= roadMultipliers.length;
       const next: RoadRecord = { ...entry.response, steps, last: { choice, safe }, status: safe ? won ? 'WON' : 'PLAYING' : 'LOST', completedAt: safe && !won ? undefined : new Date().toISOString() };

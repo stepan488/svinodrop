@@ -1190,7 +1190,7 @@ export default function App() {
               ["📦", "Кейс-баттлы", "Победа забирает банк", "battles"],
               ["⚓", "Морской бой", "Ставка один на один", "naval"],
               ["💣", "Свиные мины", "Риск и множители", "mines"],
-              ["🐷", "Свиная дорога", "15 шагов до ×48", "road"],
+              ["🐷", "Свиная дорога", "20 шагов до ×48", "road"],
               ["📜", "Контракт", "Собери скины", "contract"],
               ["🚀", "Свинокраш", "Успей забрать икс", "crash"],
             ].map(([icon, title, text, id]) => (
@@ -2355,8 +2355,8 @@ function PublicProfileModal({
 }
 
 const roadMultipliers = [
-  1.08, 1.18, 1.3, 1.46, 1.66, 1.92, 2.26, 2.72, 3.38, 4.35, 5.82, 8.1, 12.1,
-  20.6, 48,
+  1.05, 1.11, 1.18, 1.27, 1.38, 1.51, 1.67, 1.86, 2.1, 2.4, 2.78, 3.28,
+  3.94, 4.85, 6.15, 8.05, 10.95, 15.8, 25.1, 48,
 ];
 const roadPigImage =
   "https://i.ibb.co/yBRpJjPv/ae3fd723-35f3-40aa-9ac4-3703fd5c274f.png";
@@ -2382,6 +2382,7 @@ function PigRoadPage({
   const [rulesOpen, setRulesOpen] = useState(false);
   const [roundKey, setRoundKey] = useState(0);
   const [roadShift, setRoadShift] = useState(false);
+  const [roadWin, setRoadWin] = useState<RoadGame | null>(null);
   const playing = game?.status === "PLAYING";
   const stakeCoins = Math.floor(Number(stake) || 0);
   const nextMultiplier = playing
@@ -2447,8 +2448,10 @@ function PigRoadPage({
       await onBalance();
       if (!data.game.last?.safe)
         toast("Платформа была заминирована — ставка сгорела.");
-      if (data.game.status === "WON")
+      if (data.game.status === "WON") {
+        setRoadWin(data.game);
         toast(`Свинья добралась до финиша: ${coins(data.game.payout)} SC!`);
+      }
     } catch (error) {
       toast(error instanceof Error ? error.message : "Шаг не выполнен");
     } finally {
@@ -2485,7 +2488,7 @@ function PigRoadPage({
             Свиная <strong>дорога</strong>
           </h1>
           <p>
-            Выбери платформу, проведи свинью по дороге из 15 шагов и забери
+            Выбери платформу, проведи свинью по дороге из 20 шагов и забери
             выигрыш до ловушки.
           </p>
         </div>
@@ -2515,7 +2518,7 @@ function PigRoadPage({
                 : game?.status === "WON"
                   ? game.maxSteps
                   : 1}
-              /{game?.maxSteps || 15}
+              /{game?.maxSteps || 20}
             </span>
             <strong>
               {playing
@@ -2529,9 +2532,9 @@ function PigRoadPage({
           </div>
           <div
             className="road-route-preview"
-            aria-label="Дорога из пятнадцати шагов"
+            aria-label="Дорога из двадцати шагов"
           >
-            {Array.from({ length: 15 }, (_, index) => (
+            {Array.from({ length: game?.maxSteps || roadMultipliers.length }, (_, index) => (
               <span
                 className={
                   index < (game?.steps.length || 0)
@@ -2670,6 +2673,24 @@ function PigRoadPage({
           </button>
         </aside>
       </div>
+      {roadWin && (
+        <div className="road-win-backdrop" role="presentation">
+          <section className="road-win-modal" role="dialog" aria-modal="true">
+            <span className="road-win-sparkles">✦ ✧ ✦</span>
+            <small>СВИНАЯ ДОРОГА · ФИНИШ</small>
+            <div className="road-win-pig">
+              <img src={roadPigImage} alt="Свинья-победитель" />
+              <span>🏆</span>
+            </div>
+            <h2>Дорога пройдена!</h2>
+            <p>Свинья прошла все {roadWin.maxSteps} платформ и забрала главный приз.</p>
+            <b>{multiplier(roadWin.multiplier)} · {coins(roadWin.payout)} SC</b>
+            <button className="pig-button" onClick={() => setRoadWin(null)}>
+              ЗАБРАТЬ ПРИЗ →
+            </button>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
@@ -5457,7 +5478,7 @@ function UpgradeDial({
     phase === "result" ? (result?.success ? "success" : "failure") : "";
   return (
     <div
-      className={`sd-upgrade ${phase} ${result ? "ready" : ""} ${outcomeClass}`}
+      className={`sd-upgrade mode-${mode.toLowerCase()} ${phase} ${result ? "ready" : ""} ${outcomeClass}`}
       style={
         {
           "--success-size": `${safeChance * 3.6}deg`,
@@ -5520,6 +5541,12 @@ function UpgradeDial({
           aria-hidden="true"
         />
       </div>
+      {mode === "RISK" && phase === "spinning" && (
+        <div className="sd-risk-suspense" aria-live="polite">
+          <span>В АЗАРТЕ</span>
+          <b>ИЩЕМ СЧАСТЛИВУЮ ЗОНУ…</b>
+        </div>
+      )}
     </div>
   );
 }
