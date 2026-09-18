@@ -293,6 +293,54 @@ function creditStatus(claimed = 0) {
   const safeClaimed = Math.min(dailyCreditLimit, Math.max(0, claimed));
   return { limit: dailyCreditLimit, claimed: safeClaimed, remaining: dailyCreditLimit - safeClaimed, dayKey: kyivDayKey() };
 }
+
+type DailyStreakRecord = { version: 1; day: number; claimedDay: string };
+type DailyStreakReward = { type: 'COINS'; amount: number } | { type: 'ITEM'; itemId: string };
+type DailyStreakItem = { id: string; name: string; wear: string; price: number; image: string; rarity: string; active: boolean; upgradeEligible: boolean };
+const dailyStreakKey = 'daily-streak-v1';
+// A two-week lap alternates useful balance drops with real, sellable skins.
+// Amounts are stored in kopecks, the same unit as the rest of the economy.
+const dailyStreakRewards: DailyStreakReward[] = [
+  { type: 'COINS', amount: 100_000 }, { type: 'ITEM', itemId: '3' },
+  { type: 'COINS', amount: 175_000 }, { type: 'ITEM', itemId: '5' },
+  { type: 'COINS', amount: 250_000 }, { type: 'ITEM', itemId: '7' },
+  { type: 'COINS', amount: 350_000 }, { type: 'ITEM', itemId: '9' },
+  { type: 'COINS', amount: 500_000 }, { type: 'ITEM', itemId: '10' },
+  { type: 'COINS', amount: 750_000 }, { type: 'ITEM', itemId: '12' },
+  { type: 'COINS', amount: 1_000_000 }, { type: 'ITEM', itemId: '14' },
+];
+function isDailyStreakRecord(value: unknown): value is DailyStreakRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<DailyStreakRecord>;
+  return record.version === 1 && Number.isInteger(record.day) && Number(record.day) >= 1 && Number(record.day) <= 14 && typeof record.claimedDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(record.claimedDay);
+}
+function calendarDayDistance(from: string, to: string) {
+  const toUtc = (value: string) => { const [year, month, day] = value.split('-').map(Number); return Date.UTC(year, month - 1, day); };
+  return Math.round((toUtc(to) - toUtc(from)) / 86_400_000);
+}
+function dailyStreakStatus(record: DailyStreakRecord | null, today = kyivDayKey()) {
+  if (!record) return { available: true, claimDay: 1, progressDay: 0, reset: false, today };
+  const distance = calendarDayDistance(record.claimedDay, today);
+  if (distance === 0) return { available: false, claimDay: record.day === 14 ? 1 : record.day + 1, progressDay: record.day, reset: false, today };
+  if (distance === 1) return { available: true, claimDay: record.day === 14 ? 1 : record.day + 1, progressDay: record.day, reset: false, today };
+  return { available: true, claimDay: 1, progressDay: 0, reset: true, today };
+}
+function dailyStreakView(status: ReturnType<typeof dailyStreakStatus>, items: DailyStreakItem[]) {
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  return {
+    ...status,
+    cycleLength: dailyStreakRewards.length,
+    rewards: dailyStreakRewards.map((reward, index) => ({ day: index + 1, ...reward, ...(reward.type === 'ITEM' ? { item: itemById.get(reward.itemId) || null } : {}) })),
+  };
+}
+async function getDailyStreakView(userId: string) {
+  const [entry, items] = await Promise.all([
+    prisma.opening.findUnique({ where: { userId_key: { userId, key: dailyStreakKey } } }),
+    prisma.item.findMany({ where: { id: { in: dailyStreakRewards.filter((reward): reward is Extract<DailyStreakReward, { type: 'ITEM' }> => reward.type === 'ITEM').map((reward) => reward.itemId) } }, select: itemSelect }),
+  ]);
+  const record = entry && isDailyStreakRecord(entry.response) ? entry.response : null;
+  return dailyStreakView(dailyStreakStatus(record), items);
+}
 type AutoGiveaway = { kind: 'HOURLY' | 'DAILY' | 'WEEKLY'; title: string; entryPrice: number; min: number; max: number; start: Date; end: Date };
 function startOfDay(date: Date) { const value = new Date(date); value.setHours(0, 0, 0, 0); return value; }
 function automaticGiveawayWindows(now = new Date()): AutoGiveaway[] {
@@ -530,13 +578,14 @@ app.post('/api/inventory/sell-all', auth, async (req: AuthedRequest, res) => {
 });
 app.get('/api/profile', auth, async (req: AuthedRequest, res) => {
   const userId = req.session!.id;
-  const [user, opens, upgrades, itemCount, transactions, upgradeHistory, credit] = await Promise.all([
+  const [user, opens, upgrades, itemCount, transactions, upgradeHistory, credit, streak] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: userId } }), prisma.drop.count({ where: { userId } }), prisma.upgrade.count({ where: { userId } }), prisma.inventory.count({ where: { userId, removedAt: null, revealed: true } }),
     prisma.transaction.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 10 }),
     prisma.upgrade.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 12, include: { sourceItem: { select: itemSelect }, targetItem: { select: itemSelect } } }),
     prisma.opening.findUnique({ where: { userId_key: { userId, key: dailyCreditKey() } } }),
+    getDailyStreakView(userId),
   ]);
-  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt), credit: creditStatus(readCreditClaim(credit?.response)) });
+  res.json({ user: publicUser(user), stats: { opens, upgrades, itemCount }, transactions, upgradeHistory, daily: dailyStatus(user.dailyCaseClaimedAt), credit: creditStatus(readCreditClaim(credit?.response)), streak });
 });
 app.get('/api/balance-credit', auth, async (req: AuthedRequest, res) => {
   const record = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: dailyCreditKey() } } });
@@ -601,6 +650,37 @@ app.post('/api/daily-case/open', auth, async (req: AuthedRequest, res) => {
     }, { isolationLevel: 'Serializable' });
     res.json(result);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось открыть ежедневный кейс.' }); }
+});
+
+app.get('/api/daily-streak', auth, async (req: AuthedRequest, res) => {
+  res.json({ streak: await getDailyStreakView(req.session!.id) });
+});
+app.post('/api/daily-streak/claim', auth, async (req: AuthedRequest, res) => {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: dailyStreakKey } } });
+      const previous = isDailyStreakRecord(entry?.response) ? entry!.response : null;
+      const status = dailyStreakStatus(previous);
+      if (!status.available) throw new Error('Сегодняшняя награда уже забрана. Возвращайся завтра!');
+      const reward = dailyStreakRewards[status.claimDay - 1];
+      let responseReward: { day: number; type: 'COINS'; amount: number } | { day: number; type: 'ITEM'; item: DailyStreakItem };
+      if (reward.type === 'COINS') {
+        await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: reward.amount } } });
+        await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_COINS', amount: reward.amount, description: `Ежедневная серия · день ${status.claimDay}/14` } });
+        responseReward = { day: status.claimDay, type: 'COINS', amount: reward.amount };
+      } else {
+        const item = await tx.item.findFirst({ where: { id: reward.itemId, active: true }, select: itemSelect });
+        if (!item) throw new Error('Награда для этого дня временно недоступна.');
+        await tx.inventory.create({ data: { userId: req.session!.id, itemId: item.id, obtainedFrom: `daily-streak:${status.claimDay}`, revealed: true } });
+        await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_ITEM', amount: 0, description: `Ежедневная серия · день ${status.claimDay}/14 · «${item.name}»` } });
+        responseReward = { day: status.claimDay, type: 'ITEM', item };
+      }
+      const next: DailyStreakRecord = { version: 1, day: status.claimDay, claimedDay: status.today };
+      await tx.opening.upsert({ where: { userId_key: { userId: req.session!.id, key: dailyStreakKey } }, create: { userId: req.session!.id, key: dailyStreakKey, response: next }, update: { response: next } });
+      return { reward: responseReward, reset: status.reset };
+    }, { isolationLevel: 'Serializable' });
+    res.json(result);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать награду серии.' }); }
 });
 
 app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {

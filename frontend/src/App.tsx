@@ -153,6 +153,18 @@ type CreditStatus = {
   remaining: number;
   dayKey: string;
 };
+type DailyStreakReward =
+  | { day: number; type: "COINS"; amount: number }
+  | { day: number; type: "ITEM"; itemId: string; item: Skin | null };
+type DailyStreak = {
+  available: boolean;
+  claimDay: number;
+  progressDay: number;
+  reset: boolean;
+  today: string;
+  cycleLength: number;
+  rewards: DailyStreakReward[];
+};
 type CrashRound = {
   id: string;
   phase: "BETTING" | "RUNNING" | "CRASHED";
@@ -326,6 +338,83 @@ class ApiError extends Error {
   }
 }
 
+function DailyStreakCalendar({
+  streak,
+  busy,
+  onClaim,
+}: {
+  streak: DailyStreak | null;
+  busy: boolean;
+  onClaim: () => void;
+}) {
+  if (!streak) return null;
+  return (
+    <section className="daily-streak-calendar">
+      <header>
+        <div>
+          <p className="eyebrow">🐷 ЕЖЕДНЕВНАЯ СЕРИЯ · 14 ДНЕЙ</p>
+          <h2>Свинки любят, когда ты возвращаешься</h2>
+          <p>
+            Забирай подарок каждый календарный день. Пропустишь день — серия
+            вернётся к первому подарку.
+          </p>
+        </div>
+        <div className="streak-counter">
+          <small>ТЕКУЩИЙ ДЕНЬ</small>
+          <b>{streak.available ? streak.claimDay : streak.progressDay}/14</b>
+        </div>
+      </header>
+      <div className="streak-days">
+        {streak.rewards.map((reward) => {
+          const claimed = !streak.reset && reward.day <= streak.progressDay;
+          const current = streak.available && reward.day === streak.claimDay;
+          const itemName = reward.type === "ITEM" ? reward.item?.name : null;
+          return (
+            <article
+              className={`${claimed ? "claimed " : ""}${current ? "current" : ""}`}
+              key={reward.day}
+            >
+              <small>ДЕНЬ {String(reward.day).padStart(2, "0")}</small>
+              <div className="streak-reward-art">
+                {reward.type === "ITEM" && reward.item ? (
+                  <img src={reward.item.image} alt="" />
+                ) : (
+                  <span>🐷</span>
+                )}
+              </div>
+              <b>
+                {reward.type === "COINS"
+                  ? `${coins(reward.amount)} SC`
+                  : itemName || "Скин-сюрприз"}
+              </b>
+              {claimed && <i>✓</i>}
+              {current && <em>ЗАБРАТЬ</em>}
+            </article>
+          );
+        })}
+      </div>
+      <footer>
+        <span>
+          {streak.available
+            ? `Сегодня доступен подарок за день ${streak.claimDay}.`
+            : `День ${streak.progressDay} уже забран — следующий подарок завтра.`}
+        </span>
+        <button
+          className="pig-button"
+          disabled={!streak.available || busy}
+          onClick={onClaim}
+        >
+          {busy
+            ? "ГОТОВИМ ПОДАРОК…"
+            : streak.available
+              ? `ЗАБРАТЬ ДЕНЬ ${streak.claimDay} →`
+              : "ПОДАРОК УЖЕ ЗАБРАН"}
+        </button>
+      </footer>
+    </section>
+  );
+}
+
 function ProfileUpgradeHistory({ upgrades }: { upgrades: UpgradeHistory[] }) {
   return (
     <section className="panel profile-upgrade-history">
@@ -454,6 +543,7 @@ export default function App() {
     upgradeHistory: UpgradeHistory[];
     daily: { available: boolean; nextAt: string | null; maxValue: number };
     credit: CreditStatus;
+    streak: DailyStreak;
   } | null>(null);
   const [chat, setChat] = useState<
     {
@@ -481,6 +571,7 @@ export default function App() {
   const [favoritesLoadedKey, setFavoritesLoadedKey] = useState("");
   const [creditAmount, setCreditAmount] = useState("150000");
   const [creditBusy, setCreditBusy] = useState(false);
+  const [streakBusy, setStreakBusy] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(
     () => localStorage.getItem("svino-sound") !== "off",
   );
@@ -718,6 +809,31 @@ export default function App() {
           ? error.message
           : "Ежедневный кейс пока недоступен",
       );
+    }
+  };
+  const claimDailyStreak = async () => {
+    setStreakBusy(true);
+    try {
+      const data = await request("/api/daily-streak/claim", token, {
+        method: "POST",
+      });
+      playSiteSound(data.reward.type === "ITEM" ? "win" : "cashout");
+      const rewardText =
+        data.reward.type === "ITEM"
+          ? data.reward.item.name
+          : `${coins(data.reward.amount)} SC`;
+      toast(
+        `${data.reset ? "Серия началась заново. " : ""}День ${data.reward.day}/14: ${rewardText} уже твой!`,
+      );
+      await refreshPrivate();
+    } catch (error) {
+      toast(
+        error instanceof Error
+          ? error.message
+          : "Не удалось забрать награду серии",
+      );
+    } finally {
+      setStreakBusy(false);
     }
   };
   const takeCredit = async () => {
@@ -1574,6 +1690,11 @@ export default function App() {
                 <Stat value={profile?.stats.upgrades || 0} label="апгрейдов" />
                 <Stat value={profile?.stats.itemCount || 0} label="предметов" />
               </div>
+              <DailyStreakCalendar
+                streak={profile?.streak || null}
+                busy={streakBusy}
+                onClaim={claimDailyStreak}
+              />
               <div className="profile-columns">
                 <section className="panel daily-case">
                   <span>🎁</span>
