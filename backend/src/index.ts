@@ -295,19 +295,20 @@ function creditStatus(claimed = 0) {
 }
 
 type DailyStreakRecord = { version: 1; day: number; claimedDay: string };
-type DailyStreakReward = { type: 'COINS'; amount: number } | { type: 'ITEM'; itemId: string };
+type DailyStreakReward = { type: 'COINS'; amount: number } | { type: 'ITEM'; minPrice: number; maxPrice: number };
 type DailyStreakItem = { id: string; name: string; wear: string; price: number; image: string; rarity: string; active: boolean; upgradeEligible: boolean };
 const dailyStreakKey = 'daily-streak-v1';
-// A two-week lap alternates useful balance drops with real, sellable skins.
-// Amounts are stored in kopecks, the same unit as the rest of the economy.
+// A two-week lap grows in value. The calendar never exposes this schedule to
+// the player: every future day stays a surprise until it is claimed.
+// Prices and amounts are stored in kopecks, the site's internal money unit.
 const dailyStreakRewards: DailyStreakReward[] = [
-  { type: 'COINS', amount: 100_000 }, { type: 'ITEM', itemId: '3' },
-  { type: 'COINS', amount: 175_000 }, { type: 'ITEM', itemId: '5' },
-  { type: 'COINS', amount: 250_000 }, { type: 'ITEM', itemId: '7' },
-  { type: 'COINS', amount: 350_000 }, { type: 'ITEM', itemId: '9' },
-  { type: 'COINS', amount: 500_000 }, { type: 'ITEM', itemId: '10' },
-  { type: 'COINS', amount: 750_000 }, { type: 'ITEM', itemId: '12' },
-  { type: 'COINS', amount: 1_000_000 }, { type: 'ITEM', itemId: '14' },
+  { type: 'COINS', amount: 200_000 }, { type: 'ITEM', minPrice: 300_000, maxPrice: 500_000 },
+  { type: 'COINS', amount: 350_000 }, { type: 'ITEM', minPrice: 500_000, maxPrice: 800_000 },
+  { type: 'COINS', amount: 500_000 }, { type: 'ITEM', minPrice: 800_000, maxPrice: 1_200_000 },
+  { type: 'COINS', amount: 750_000 }, { type: 'ITEM', minPrice: 1_200_000, maxPrice: 1_800_000 },
+  { type: 'COINS', amount: 1_000_000 }, { type: 'ITEM', minPrice: 1_800_000, maxPrice: 3_000_000 },
+  { type: 'COINS', amount: 1_500_000 }, { type: 'ITEM', minPrice: 3_000_000, maxPrice: 5_500_000 },
+  { type: 'COINS', amount: 2_000_000 }, { type: 'ITEM', minPrice: 5_500_000, maxPrice: 10_000_000 },
 ];
 function isDailyStreakRecord(value: unknown): value is DailyStreakRecord {
   if (!value || typeof value !== 'object') return false;
@@ -327,21 +328,17 @@ function dailyStreakStatus(record: DailyStreakRecord | null, today = kyivDayKey(
   if (distance === 1) return { available: true, claimDay: nextDay, rewardDay: rewardDay(nextDay), progressDay: record.day, progressRewardDay: rewardDay(record.day), reset: false, today };
   return { available: true, claimDay: 1, rewardDay: 1, progressDay: 0, progressRewardDay: 0, reset: true, today };
 }
-function dailyStreakView(status: ReturnType<typeof dailyStreakStatus>, items: DailyStreakItem[]) {
-  const itemById = new Map(items.map((item) => [item.id, item]));
+function dailyStreakView(status: ReturnType<typeof dailyStreakStatus>) {
   return {
     ...status,
     cycleLength: dailyStreakRewards.length,
-    rewards: dailyStreakRewards.map((reward, index) => ({ day: index + 1, ...reward, ...(reward.type === 'ITEM' ? { item: itemById.get(reward.itemId) || null } : {}) })),
+    rewards: dailyStreakRewards.map((_reward, index) => ({ day: index + 1 })),
   };
 }
 async function getDailyStreakView(userId: string) {
-  const [entry, items] = await Promise.all([
-    prisma.opening.findUnique({ where: { userId_key: { userId, key: dailyStreakKey } } }),
-    prisma.item.findMany({ where: { id: { in: dailyStreakRewards.filter((reward): reward is Extract<DailyStreakReward, { type: 'ITEM' }> => reward.type === 'ITEM').map((reward) => reward.itemId) } }, select: itemSelect }),
-  ]);
+  const entry = await prisma.opening.findUnique({ where: { userId_key: { userId, key: dailyStreakKey } } });
   const record = entry && isDailyStreakRecord(entry.response) ? entry.response : null;
-  return dailyStreakView(dailyStreakStatus(record), items);
+  return dailyStreakView(dailyStreakStatus(record));
 }
 type AutoGiveaway = { kind: 'HOURLY' | 'DAILY' | 'WEEKLY'; title: string; entryPrice: number; min: number; max: number; start: Date; end: Date };
 function startOfDay(date: Date) { const value = new Date(date); value.setHours(0, 0, 0, 0); return value; }
@@ -671,8 +668,9 @@ app.post('/api/daily-streak/claim', auth, async (req: AuthedRequest, res) => {
         await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_COINS', amount: reward.amount, description: `Ежедневная серия · день ${status.claimDay} · награда круга ${status.rewardDay}/14` } });
         responseReward = { day: status.claimDay, rewardDay: status.rewardDay, type: 'COINS', amount: reward.amount };
       } else {
-        const item = await tx.item.findFirst({ where: { id: reward.itemId, active: true }, select: itemSelect });
-        if (!item) throw new Error('Награда для этого дня временно недоступна.');
+        const candidates = await tx.item.findMany({ where: { active: true, price: { gte: reward.minPrice, lte: reward.maxPrice } }, select: itemSelect, orderBy: { price: 'asc' } });
+        if (!candidates.length) throw new Error('Награда для этого дня временно недоступна.');
+        const item = pickWeighted(candidates.map((candidate) => ({ ...candidate, weight: Math.max(1, Math.round(100_000 / Math.max(1, candidate.price / 100)))})));
         await tx.inventory.create({ data: { userId: req.session!.id, itemId: item.id, obtainedFrom: `daily-streak:${status.claimDay}`, revealed: true } });
         await tx.transaction.create({ data: { userId: req.session!.id, type: 'DAILY_STREAK_ITEM', amount: 0, description: `Ежедневная серия · день ${status.claimDay} · награда круга ${status.rewardDay}/14 · «${item.name}»` } });
         responseReward = { day: status.claimDay, rewardDay: status.rewardDay, type: 'ITEM', item };

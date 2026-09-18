@@ -153,9 +153,10 @@ type CreditStatus = {
   remaining: number;
   dayKey: string;
 };
-type DailyStreakReward =
-  | { day: number; type: "COINS"; amount: number }
-  | { day: number; type: "ITEM"; itemId: string; item: Skin | null };
+type DailyStreakReward = { day: number };
+type DailyStreakPrize =
+  | { day: number; rewardDay: number; type: "COINS"; amount: number }
+  | { day: number; rewardDay: number; type: "ITEM"; item: Skin };
 type DailyStreak = {
   available: boolean;
   claimDay: number;
@@ -370,7 +371,6 @@ function DailyStreakCalendar({
         {streak.rewards.map((reward) => {
           const current = streak.available && reward.day === streak.rewardDay;
           const claimed = !current && !streak.reset && reward.day <= streak.progressRewardDay;
-          const itemName = reward.type === "ITEM" ? reward.item?.name : null;
           return (
             <article
               className={`${claimed ? "claimed " : ""}${current ? "current" : ""}`}
@@ -380,17 +380,9 @@ function DailyStreakCalendar({
                 ДЕНЬ {String(current ? streak.claimDay : reward.day).padStart(2, "0")}
               </small>
               <div className="streak-reward-art">
-                {reward.type === "ITEM" && reward.item ? (
-                  <img src={reward.item.image} alt="" />
-                ) : (
-                  <span>🐷</span>
-                )}
+                <span>?</span>
               </div>
-              <b>
-                {reward.type === "COINS"
-                  ? `${coins(reward.amount)} SC`
-                  : itemName || "Скин-сюрприз"}
-              </b>
+              <b>СЮРПРИЗ</b>
               {claimed && <i>✓</i>}
               {current && <em>ЗАБРАТЬ</em>}
             </article>
@@ -400,7 +392,7 @@ function DailyStreakCalendar({
       <footer>
         <span>
           {streak.available
-            ? `Сегодня доступен подарок за день ${streak.claimDay} (награда ${streak.rewardDay}/14).`
+            ? `Сегодня доступен закрытый подарок за день ${streak.claimDay}.`
             : `День ${streak.progressDay} уже забран — следующий подарок завтра.`}
         </span>
         <button
@@ -416,6 +408,37 @@ function DailyStreakCalendar({
         </button>
       </footer>
     </section>
+  );
+}
+
+function DailyStreakPrizeModal({
+  prize,
+  onClose,
+}: {
+  prize: DailyStreakPrize;
+  onClose: () => void;
+}) {
+  const isItem = prize.type === "ITEM";
+  return (
+    <div className="daily-streak-prize-backdrop" role="presentation">
+      <section className="daily-streak-prize-modal" role="dialog" aria-modal="true">
+        <span className="daily-streak-prize-sparkles">✦ ✧ ✦</span>
+        <small>ЕЖЕДНЕВНАЯ СЕРИЯ · ДЕНЬ {prize.day}</small>
+        <h2>{isItem ? "Свинка открыла скин!" : "Свинка принесла монеты!"}</h2>
+        <div className="daily-streak-prize-art">
+          {isItem ? <img src={prize.item.image} alt="" /> : <span>🐷</span>}
+        </div>
+        <b>{isItem ? prize.item.name : `${coins(prize.amount)} SC`}</b>
+        <p>
+          {isItem
+            ? `${prize.item.wear} · ${coins(prize.item.price)} SC · уже в инвентаре`
+            : "Свинокоины уже на твоём балансе"}
+        </p>
+        <button className="pig-button" onClick={onClose}>
+          ЗАБРАТЬ ПОДАРОК →
+        </button>
+      </section>
+    </div>
   );
 }
 
@@ -576,6 +599,7 @@ export default function App() {
   const [creditAmount, setCreditAmount] = useState("150000");
   const [creditBusy, setCreditBusy] = useState(false);
   const [streakBusy, setStreakBusy] = useState(false);
+  const [streakPrize, setStreakPrize] = useState<DailyStreakPrize | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(
     () => localStorage.getItem("svino-sound") !== "off",
   );
@@ -822,12 +846,12 @@ export default function App() {
         method: "POST",
       });
       playSiteSound(data.reward.type === "ITEM" ? "win" : "cashout");
+      const reward = data.reward as DailyStreakPrize;
+      setStreakPrize(reward);
       const rewardText =
-        data.reward.type === "ITEM"
-          ? data.reward.item.name
-          : `${coins(data.reward.amount)} SC`;
+        reward.type === "ITEM" ? reward.item.name : `${coins(reward.amount)} SC`;
       toast(
-        `${data.reset ? "Серия началась заново. " : ""}День ${data.reward.day}/14: ${rewardText} уже твой!`,
+        `${data.reset ? "Серия началась заново. " : ""}День ${reward.day}: ${rewardText} уже твой!`,
       );
       await refreshPrivate();
     } catch (error) {
@@ -1788,6 +1812,12 @@ export default function App() {
           token={token}
           onSaved={setUser}
           toast={toast}
+        />
+      )}
+      {page === "profile" && streakPrize && (
+        <DailyStreakPrizeModal
+          prize={streakPrize}
+          onClose={() => setStreakPrize(null)}
         />
       )}
       {page === "chat" && (
