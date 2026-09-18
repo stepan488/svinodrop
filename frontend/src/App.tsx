@@ -2478,6 +2478,7 @@ function PigRoadPage({
     }
   };
   const completedSteps = game?.steps.length || 0;
+  const stepsToFinish = Math.max(0, (game?.maxSteps || roadMultipliers.length) - completedSteps);
   const visibleRoadSteps = [completedSteps - 1, completedSteps, completedSteps + 1, completedSteps + 2];
   return (
     <section className="page compact-page road-page">
@@ -2556,7 +2557,17 @@ function PigRoadPage({
               src={roadPigImage}
               alt="Свинья на старте"
             />
-            <div className="road-finish">🏁</div>
+            <div className="road-finish">
+              <span>🏁</span>
+              <b>
+                {stepsToFinish === 0
+                  ? "ФИНИШ ПОКОРЁН"
+                  : stepsToFinish === 1
+                    ? "ФИНИШ УЖЕ РЯДОМ"
+                    : `ДО ФИНИША · ${stepsToFinish} ${stepsToFinish === 2 || stepsToFinish === 3 || stepsToFinish === 4 ? "ПЛАТФОРМЫ" : "ПЛАТФОРМ"}`}
+              </b>
+              {stepsToFinish > 0 && <small>главный приз ×48</small>}
+            </div>
           </div>
           <div className={`road-platform-strip ${roadShift ? "slide-forward" : ""}`} key={roundKey}>
             {visibleRoadSteps.map((stepIndex, index) => {
