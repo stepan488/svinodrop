@@ -829,7 +829,7 @@ app.post('/api/road/step', auth, async (req: AuthedRequest, res) => {
     const game = await prisma.$transaction(async (tx) => {
       const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
       if (!isRoadRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Начни новый забег.');
-      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_500 : 8_000);
+      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_500 : 7_500);
       const steps = safe ? [...entry.response.steps, choice] : entry.response.steps;
       const won = safe && steps.length >= roadMultipliers.length;
       const next: RoadRecord = { ...entry.response, steps, last: { choice, safe }, status: safe ? won ? 'WON' : 'PLAYING' : 'LOST', completedAt: safe && !won ? undefined : new Date().toISOString() };
