@@ -5483,6 +5483,10 @@ function UpgradeDial({
   // The arrow itself moves; the green success segment is fixed below.
   // The final angle is decided by the server result before this animation begins.
   const endAngle = result?.landingAngle || 0;
+  // Every risk-spin waypoint is derived from the exact protected landing
+  // angle. This keeps the arrow moving in one direction and decelerating at
+  // every stage, regardless of where its final point is on the dial.
+  const riskTurn = (part: number) => `${Math.round(endAngle * part)}deg`;
   // Do not attach an outcome class while the arrow is moving: a green centre
   // used to reveal a win before the animation had finished.
   const outcomeClass =
@@ -5494,6 +5498,11 @@ function UpgradeDial({
         {
           "--success-size": `${safeChance * 3.6}deg`,
           "--needle-end": `${endAngle}deg`,
+          "--risk-turn-1": riskTurn(0.54),
+          "--risk-turn-2": riskTurn(0.78),
+          "--risk-turn-3": riskTurn(0.9),
+          "--risk-turn-4": riskTurn(0.965),
+          "--risk-turn-5": riskTurn(0.993),
           "--motion-duration": `${spinDuration[mode]}ms`,
         } as React.CSSProperties
       }
