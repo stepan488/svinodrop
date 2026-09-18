@@ -781,7 +781,7 @@ app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
 type RoadStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT' | 'WON';
 type RoadRecord = { version: 1; status: RoadStatus; wager: number; steps: number[]; last?: { choice: number; safe: boolean }; createdAt: string; completedAt?: string };
 const roadOpeningKey = 'piggy-road-active-v1';
-const roadMultipliers = [1.1, 1.28, 1.5, 1.8, 2.2, 2.75, 3.55, 4.8, 6.9, 10.6, 18.5, 48];
+const roadMultipliers = [1.08, 1.18, 1.3, 1.46, 1.66, 1.92, 2.26, 2.72, 3.38, 4.35, 5.82, 8.1, 12.1, 20.6, 48];
 const isRoadRecord = (value: unknown): value is RoadRecord => Boolean(value && typeof value === 'object' && (value as RoadRecord).version === 1 && Array.isArray((value as RoadRecord).steps) && typeof (value as RoadRecord).wager === 'number');
 const roadMultiplier = (game: RoadRecord) => game.steps.length ? roadMultipliers[Math.min(roadMultipliers.length - 1, game.steps.length - 1)] : 1;
 const roadPayout = (game: RoadRecord) => Math.round(game.wager * roadMultiplier(game));
@@ -817,7 +817,7 @@ app.post('/api/road/step', auth, async (req: AuthedRequest, res) => {
     const game = await prisma.$transaction(async (tx) => {
       const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
       if (!isRoadRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Начни новый забег.');
-      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 5_000 : 8_000);
+      const safe = crypto.randomInt(10_000) < (entry.response.steps.length === 0 ? 4_500 : 7_000);
       const steps = safe ? [...entry.response.steps, choice] : entry.response.steps;
       const won = safe && steps.length >= roadMultipliers.length;
       const next: RoadRecord = { ...entry.response, steps, last: { choice, safe }, status: safe ? won ? 'WON' : 'PLAYING' : 'LOST', completedAt: safe && !won ? undefined : new Date().toISOString() };
@@ -1349,6 +1349,24 @@ app.post('/api/admin/giveaways', auth, admin, async (req: AuthedRequest, res) =>
     await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'GIVEAWAY_CREATE', metadata: { giveawayId: giveaway.id, prizeItemId, entryPrice } } });
     res.status(201).json(giveaway);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать розыгрыш.' }); }
+});
+app.delete('/api/admin/giveaways/:id', auth, admin, async (req: AuthedRequest, res) => {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const giveaway = await tx.giveaway.findUnique({ where: { id: req.params.id }, include: { entries: { select: { userId: true } } } });
+      if (!giveaway) throw new Error('Розыгрыш не найден.');
+      // Never silently take tickets away: cancelling a giveaway returns every
+      // paid entry before the record disappears from the administration list.
+      for (const entry of giveaway.entries) {
+        await tx.user.update({ where: { id: entry.userId }, data: { balance: { increment: giveaway.entryPrice } } });
+        await tx.transaction.create({ data: { userId: entry.userId, type: 'GIVEAWAY_REFUND', amount: giveaway.entryPrice, description: `Возврат за удалённый розыгрыш «${giveaway.title}»` } });
+      }
+      await tx.giveaway.delete({ where: { id: giveaway.id } });
+      return { title: giveaway.title, refunded: giveaway.entries.length };
+    }, { isolationLevel: 'Serializable' });
+    await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'GIVEAWAY_DELETE', metadata: { giveawayId: req.params.id, refunded: result.refunded } } });
+    res.json(result);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось удалить розыгрыш.' }); }
 });
 app.get('/api/admin/items', auth, admin, async (_req, res) => res.json(await prisma.item.findMany({ select: itemSelect, orderBy: [{ active: 'desc' }, { price: 'asc' }] })));
 app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity, upgradeEligible = true } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || typeof upgradeEligible !== 'boolean' || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); try { const item = await prisma.$transaction(async (tx) => { const created = await tx.item.create({ data: { id, name, wear, price, image, rarity, upgradeEligible } }); const cases = await tx.case.findMany({ where: { active: true }, select: { id: true } }); await tx.caseItem.createMany({ data: cases.map((caseData) => ({ caseId: caseData.id, itemId: created.id, weight: Math.max(1, Math.round(100_000 / Math.max(1, created.price / 100))) })), skipDuplicates: true }); return created; }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE_AND_INJECT', metadata: { itemId: item.id, upgradeEligible } } }); res.status(201).json(item); } catch { res.status(409).json({ error: 'Предмет с таким ID уже существует.' }); } });
