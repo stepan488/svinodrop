@@ -721,7 +721,7 @@ app.get('/api/mines', auth, async (req: AuthedRequest, res) => {
 });
 app.post('/api/mines/start', auth, async (req: AuthedRequest, res) => {
   const wager = money(req.body?.wager); const mineCount = Number(req.body?.mineCount);
-  if (!wager || wager < 10_000 || wager > 10_000_000 || ![3, 6, 9].includes(mineCount)) return res.status(400).json({ error: 'Ставка — от 100 до 100 000 SC. Выбери 3, 6 или 9 мин.' });
+  if (!wager || wager < 50_000 || wager > 55_500_000 || ![3, 6, 9].includes(mineCount)) return res.status(400).json({ error: 'Ставка — от 500 до 555 000 SC. Выбери 3, 6 или 9 мин.' });
   try {
     const game = await prisma.$transaction(async (tx) => {
       const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: minesOpeningKey } } });
@@ -863,10 +863,13 @@ function crashBetKey(roundId: string) { return `crash-bet:${roundId}`; }
 function randomCrashMultiplier() {
   const roll = crypto.randomInt(10_000);
   const between = (min: number, max: number) => Math.round((min + crypto.randomInt(Math.round((max - min) * 100) + 1) / 100) * 100) / 100;
-  if (roll < 500) return between(1.01, 1.30);
-  if (roll < 5_000) return between(1.31, 2.00);
-  if (roll < 8_000) return between(2.01, 4.00);
-  if (roll < 9_500) return between(4.01, 10.00);
+  // 15% of rounds are an instant crash: the rocket reaches only ×1.00,
+  // therefore no cashout request can beat the server settlement.
+  if (roll < 1_500) return 1;
+  if (roll < 2_000) return between(1.01, 1.30);
+  if (roll < 5_500) return between(1.31, 2.00);
+  if (roll < 8_200) return between(2.01, 4.00);
+  if (roll < 9_550) return between(4.01, 10.00);
   if (roll < 9_900) return between(10.01, 30.00);
   return between(30.01, 100.00);
 }
@@ -940,7 +943,7 @@ app.get('/api/crash/me', auth, async (req: AuthedRequest, res) => {
 app.post('/api/crash/bet', auth, async (req: AuthedRequest, res) => {
   const balanceStake = Number(req.body?.balanceStake || 0);
   const skinInventoryIds = req.body?.skinInventoryIds || [];
-  if (!Number.isSafeInteger(balanceStake) || balanceStake < 0 || balanceStake > 10_000_000 || !Array.isArray(skinInventoryIds) || new Set(skinInventoryIds).size !== skinInventoryIds.length || skinInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Проверь ставку и выбранные скины.' });
+  if (!Number.isSafeInteger(balanceStake) || balanceStake < 0 || balanceStake > 55_500_000 || !Array.isArray(skinInventoryIds) || new Set(skinInventoryIds).size !== skinInventoryIds.length || skinInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Проверь ставку и выбранные скины.' });
   try {
     const round = await ensureCrashRound();
     if (round.phase !== 'BETTING' || Date.now() >= new Date(round.bettingEndsAt).getTime()) throw new Error('Ставки на этот раунд уже закрыты.');
@@ -953,7 +956,7 @@ app.post('/api/crash/bet', auth, async (req: AuthedRequest, res) => {
       if (skins.length !== skinInventoryIds.length) throw new Error('Один из выбранных скинов уже недоступен.');
       const skinStake = skins.reduce((sum, skin) => sum + skin.item.price, 0);
       const stake = balanceStake + skinStake;
-      if (stake < 10_000 || stake > 10_000_000) throw new Error('Общая ставка — от 100 до 100 000 SC.');
+      if (stake < 50_000 || stake > 55_500_000) throw new Error('Общая ставка — от 500 до 555 000 SC.');
       if (balanceStake) await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: balanceStake } } });
       if (skins.length) {
         const marked = await tx.inventory.updateMany({ where: { id: { in: skinInventoryIds }, userId: user.id, removedAt: null, revealed: true }, data: { removedAt: new Date() } });
