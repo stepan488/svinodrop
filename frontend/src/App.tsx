@@ -1580,7 +1580,7 @@ export default function App() {
                   <div>
                     <p className="eyebrow">КАЖДЫЕ 24 ЧАСА</p>
                     <h3>Ежедневный кейс</h3>
-                    <p>Один предмет стоимостью до 1 500 SC.</p>
+                    <p>Один предмет стоимостью от 5 000 до 200 000 SC.</p>
                     {profile?.daily?.available ? (
                       <button className="pig-button" onClick={claimDaily}>
                         Забрать кейс →
@@ -2620,6 +2620,15 @@ function MinesPage({
       setBusy(false);
     }
   };
+  const autoPick = () => {
+    if (!playing || busy || !game) return;
+    const closedCells = Array.from({ length: 25 }, (_, cell) => cell).filter(
+      (cell) => !game.opened.includes(cell),
+    );
+    if (!closedCells.length) return;
+    const cell = closedCells[Math.floor(Math.random() * closedCells.length)];
+    void openCell(cell);
+  };
   const cashout = async () => {
     if (!playing || !game.opened.length) return;
     setBusy(true);
@@ -2816,15 +2825,27 @@ function MinesPage({
             </span>
           </div>
           {playing ? (
-            <button
-              className="pig-button mines-action cashout"
-              disabled={busy || !game.opened.length}
-              onClick={cashout}
-            >
-              {game.opened.length
-                ? `ЗАБРАТЬ ${coins(game.payout)} SC →`
-                : "ОТКРОЙ ПЕРВУЮ КЛЕТКУ"}
-            </button>
+            <div className="mines-live-actions">
+              <button
+                className="mines-auto-pick"
+                disabled={busy}
+                onClick={autoPick}
+                title="Открыть случайную закрытую клетку"
+              >
+                <span>🎲</span>
+                <b>АВТОВЫБОР</b>
+                <small>случайная клетка</small>
+              </button>
+              <button
+                className="pig-button mines-action cashout"
+                disabled={busy || !game.opened.length}
+                onClick={cashout}
+              >
+                {game.opened.length
+                  ? `ЗАБРАТЬ ${coins(game.payout)} SC →`
+                  : "ОТКРОЙ ПЕРВУЮ КЛЕТКУ"}
+              </button>
+            </div>
           ) : (
             <button
               className="pig-button mines-action"
@@ -3962,8 +3983,8 @@ function BattleShowcase({ battle }: { battle: Battle }) {
               ✦ БАНК НА КОНУ · СВИНЬИ, ДЕРЖИТЕСЬ ✦
             </div>
           )}
-          <i className="jackpot-pointer">◆</i>
           <div className="battle-jackpot-reel">
+            <i className="jackpot-pointer" aria-hidden="true" />
             <div
               className="battle-jackpot-rail"
               style={

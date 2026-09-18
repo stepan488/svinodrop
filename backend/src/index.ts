@@ -590,7 +590,7 @@ app.post('/api/daily-case/open', auth, async (req: AuthedRequest, res) => {
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       const status = dailyStatus(user.dailyCaseClaimedAt);
       if (!status.available) throw new Error(`Свинячий ежедневный кейс будет доступен ${status.nextAt!.toLocaleString('ru-RU')}`);
-      const items = await tx.item.findMany({ where: { active: true, price: { lte: 150000 } }, select: itemSelect, orderBy: { price: 'asc' } });
+      const items = await tx.item.findMany({ where: { active: true, price: { gte: 500_000, lte: 20_000_000 } }, select: itemSelect, orderBy: { price: 'asc' } });
       if (!items.length) throw new Error('В ежедневном кейсе пока нет предметов.');
       const winner = pickWeighted(items.map((item) => ({ ...item, weight: Math.max(1, Math.round(100_000 / (item.price / 100)))})));
       const inventory = await tx.inventory.create({ data: { userId: user.id, itemId: winner.id, obtainedFrom: 'daily-case', revealed: true } });
