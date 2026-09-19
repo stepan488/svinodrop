@@ -971,6 +971,90 @@ app.post('/api/mines/cashout', auth, async (req: AuthedRequest, res) => {
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш' }); }
 });
 
+// Pigsty is a skin-backed four-window risk game. Bombs are generated server-side
+// for every step, so neither the client nor a refresh can reveal the safe window.
+type PigstyStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT';
+type PigstyStakeItem = { id: string; name: string; wear: string; price: number; image: string; rarity: string };
+type PigstyRecord = { version: 1; status: PigstyStatus; bombCount: 1 | 2 | 3; stakeItem: PigstyStakeItem; activeBombs: number[]; choices: Array<{ choice: number; safe: boolean }>; createdAt: string; completedAt?: string };
+const pigstyOpeningKey = 'pigsty-active-v1';
+const pigstyStepFactors: Record<1 | 2 | 3, number> = { 1: 1.24, 2: 1.78, 3: 3.18 };
+const isPigstyRecord = (value: unknown): value is PigstyRecord => Boolean(value && typeof value === 'object' && (value as PigstyRecord).version === 1 && Array.isArray((value as PigstyRecord).activeBombs) && Array.isArray((value as PigstyRecord).choices) && [1, 2, 3].includes((value as PigstyRecord).bombCount));
+function pigstyBombs(bombCount: 1 | 2 | 3) {
+  const windows = [0, 1, 2, 3]; const bombs: number[] = [];
+  for (let index = 0; index < bombCount; index += 1) bombs.push(windows.splice(crypto.randomInt(windows.length), 1)[0]);
+  return bombs;
+}
+function pigstyMultiplier(game: PigstyRecord) {
+  return game.choices.filter((choice) => choice.safe).reduce((value) => Math.round(value * pigstyStepFactors[game.bombCount] * 100) / 100, 1);
+}
+function pigstyPayout(game: PigstyRecord) { return Math.floor(game.stakeItem.price * pigstyMultiplier(game)); }
+function publicPigsty(game: PigstyRecord) {
+  return {
+    status: game.status, bombCount: game.bombCount, stakeItem: game.stakeItem, choices: game.choices,
+    round: game.choices.length + 1, multiplier: pigstyMultiplier(game), payout: game.status === 'LOST' ? 0 : pigstyPayout(game),
+    revealedBombs: game.status === 'LOST' ? game.activeBombs : undefined, createdAt: game.createdAt, completedAt: game.completedAt,
+  };
+}
+app.get('/api/pigsty', auth, async (req: AuthedRequest, res) => {
+  const entry = await prisma.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } } });
+  const game = entry && isPigstyRecord(entry.response) ? entry.response : null;
+  res.json({ game: game ? publicPigsty(game) : null });
+});
+app.post('/api/pigsty/start', auth, async (req: AuthedRequest, res) => {
+  const bombCount = Number(req.body?.bombCount); const inventoryId = typeof req.body?.inventoryId === 'string' ? req.body.inventoryId : '';
+  if (![1, 2, 3].includes(bombCount) || !inventoryId) return res.status(400).json({ error: 'Выбери предмет и от 1 до 3 бомб.' });
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } } });
+      if (current && isPigstyRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущий раунд в Свинарнике.');
+      const inventory = await tx.inventory.findFirst({ where: { id: inventoryId, userId: req.session!.id, removedAt: null }, include: { item: { select: itemSelect } } });
+      if (!inventory) throw new Error('Выбранный предмет уже недоступен.');
+      const stakeItem: PigstyStakeItem = inventory.item;
+      const next: PigstyRecord = { version: 1, status: 'PLAYING', bombCount: bombCount as 1 | 2 | 3, stakeItem, activeBombs: pigstyBombs(bombCount as 1 | 2 | 3), choices: [], createdAt: new Date().toISOString() };
+      await tx.inventory.update({ where: { id: inventory.id }, data: { removedAt: new Date() } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'PIGSTY_BET', amount: 0, description: `Ставка в «Свинарнике» · ${inventory.item.name}` } });
+      await tx.opening.upsert({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } }, create: { userId: req.session!.id, key: pigstyOpeningKey, response: next }, update: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.status(201).json({ game: publicPigsty(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось начать Свинарник.' }); }
+});
+app.post('/api/pigsty/open', auth, async (req: AuthedRequest, res) => {
+  const choice = Number(req.body?.choice);
+  if (!Number.isInteger(choice) || choice < 0 || choice > 3) return res.status(400).json({ error: 'Выбери одно из четырёх окон.' });
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } } });
+      if (!isPigstyRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Сначала начни раунд в Свинарнике.');
+      const safe = !entry.response.activeBombs.includes(choice);
+      const next: PigstyRecord = {
+        ...entry.response, choices: [...entry.response.choices, { choice, safe }], status: safe ? 'PLAYING' : 'LOST',
+        activeBombs: safe ? pigstyBombs(entry.response.bombCount) : entry.response.activeBombs,
+        completedAt: safe ? undefined : new Date().toISOString(),
+      };
+      await tx.opening.update({ where: { id: entry.id }, data: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ game: publicPigsty(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось открыть окно.' }); }
+});
+app.post('/api/pigsty/cashout', auth, async (req: AuthedRequest, res) => {
+  try {
+    const game = await prisma.$transaction(async (tx) => {
+      const entry = await tx.opening.findUniqueOrThrow({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } } });
+      if (!isPigstyRecord(entry.response) || entry.response.status !== 'PLAYING') throw new Error('Нет активного раунда для вывода.');
+      if (!entry.response.choices.length) throw new Error('Сначала поймай хотя бы одну курицу.');
+      const next: PigstyRecord = { ...entry.response, status: 'CASHED_OUT', completedAt: new Date().toISOString() };
+      const payout = pigstyPayout(next);
+      await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: payout } } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'PIGSTY_CASHOUT', amount: payout, description: `Вывод из «Свинарника» · ×${pigstyMultiplier(next)}` } });
+      await tx.opening.update({ where: { id: entry.id }, data: { response: next } });
+      return next;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ game: publicPigsty(game) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось забрать выигрыш.' }); }
+});
+
 // Piggy Road deliberately resolves one platform at a time on the server. The
 // client receives only the selected platform result, never a pre-built safe path.
 type RoadStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT' | 'WON';

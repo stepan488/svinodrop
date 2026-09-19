@@ -186,6 +186,19 @@ type MinesGame = {
   createdAt: string;
   completedAt?: string;
 };
+type PigstyStatus = "PLAYING" | "LOST" | "CASHED_OUT";
+type PigstyGame = {
+  status: PigstyStatus;
+  bombCount: 1 | 2 | 3;
+  stakeItem: Skin;
+  choices: Array<{ choice: number; safe: boolean }>;
+  round: number;
+  multiplier: number;
+  payout: number;
+  revealedBombs?: number[];
+  createdAt: string;
+  completedAt?: string;
+};
 type CreditStatus = {
   limit: number;
   claimed: number;
@@ -573,6 +586,7 @@ export default function App() {
     | "battles"
     | "naval"
     | "mines"
+    | "pigsty"
     | "road"
     | "contract"
     | "crash"
@@ -1280,6 +1294,7 @@ export default function App() {
               ["📦", "Кейс-баттлы", "Победа забирает банк", "battles"],
               ["⚓", "Морской бой", "Ставка один на один", "naval"],
               ["💣", "Свиные мины", "Риск и множители", "mines"],
+              ["🐔", "Свинарник", "Поймай курицу — не бомбу", "pigsty"],
               ["🐷", "Свиная дорога", "20 шагов до ×48", "road"],
               ["📜", "Контракт", "Собери скины", "contract"],
               ["🚀", "Свинокраш", "Успей забрать икс", "crash"],
@@ -2000,6 +2015,16 @@ export default function App() {
           toast={toast}
         />
       )}
+      {page === "pigsty" && (
+        <PigstyPage
+          token={token}
+          user={user}
+          inventory={inventory}
+          onRequireAuth={() => setAuthOpen(true)}
+          onBalance={refreshPrivate}
+          toast={toast}
+        />
+      )}
       {page === "road" && (
         <PigRoadPage
           token={token}
@@ -2530,6 +2555,115 @@ const roadPigImage =
   "https://i.ibb.co/yBRpJjPv/ae3fd723-35f3-40aa-9ac4-3703fd5c274f.png";
 const roadPlatformImage =
   "https://i.ibb.co/fYP0tkFM/6accbe3c-0217-424c-8534-b58ca6f69576.png";
+
+const pigstyPigImage = "https://i.ibb.co/7dJVxczV/9113d86c-57fa-495d-a54a-a7a5d22eff74.png";
+function PigstyPage({
+  token,
+  user,
+  inventory,
+  onRequireAuth,
+  onBalance,
+  toast,
+}: {
+  token: string;
+  user: User | null;
+  inventory: Inventory[];
+  onRequireAuth: () => void;
+  onBalance: () => Promise<void>;
+  toast: (text: string) => void;
+}) {
+  const [game, setGame] = useState<PigstyGame | null>(null);
+  const [bombCount, setBombCount] = useState<1 | 2 | 3>(1);
+  const [inventoryId, setInventoryId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const playing = game?.status === "PLAYING";
+  const selectedItem = inventory.find((item) => item.id === inventoryId);
+  const lastChoice = game?.choices[game.choices.length - 1];
+  useEffect(() => {
+    if (!inventoryId && inventory[0]) setInventoryId(inventory[0].id);
+  }, [inventory, inventoryId]);
+  useEffect(() => {
+    if (!token) { setGame(null); return; }
+    void request("/api/pigsty", token).then((data) => setGame(data.game)).catch(() => setGame(null));
+  }, [token]);
+  const start = async () => {
+    if (!user) return onRequireAuth();
+    if (!inventoryId) return toast("Выбери предмет из инвентаря для ставки.");
+    setBusy(true);
+    try {
+      const data = await request("/api/pigsty/start", token, { method: "POST", body: JSON.stringify({ inventoryId, bombCount }) });
+      setGame(data.game);
+      playSiteSound("contract");
+      await onBalance();
+      toast("Свинарник открыт. Поймай курицу и не трогай бомбу!");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Не удалось начать игру");
+    } finally { setBusy(false); }
+  };
+  const choose = async (choice: number) => {
+    if (!playing || busy) return;
+    setBusy(true);
+    try {
+      const data = await request("/api/pigsty/open", token, { method: "POST", body: JSON.stringify({ choice }) });
+      setGame(data.game);
+      playSiteSound(data.game.status === "LOST" ? "hit" : "card");
+      if (data.game.status === "LOST") toast("Бум! Все бомбы в этом окне раскрыты.");
+      else toast(`Курица поймана! Теперь ${multiplier(data.game.multiplier)}.`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Не удалось открыть окно");
+    } finally { setBusy(false); }
+  };
+  const cashout = async () => {
+    if (!playing || !game?.choices.length || busy) return;
+    setBusy(true);
+    try {
+      const data = await request("/api/pigsty/cashout", token, { method: "POST" });
+      setGame(data.game);
+      playSiteSound("cashout");
+      await onBalance();
+      toast(`Забрано ${coins(data.game.payout)} SC!`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Не удалось забрать выигрыш");
+    } finally { setBusy(false); }
+  };
+  const terminal = Boolean(game && game.status !== "PLAYING");
+  return (
+    <section className="page compact-page pigsty-page">
+      <header className="pigsty-hero">
+        <div><p className="eyebrow">PIGSTY RISK · ЧЕТЫРЕ ОКНА</p><h1>Свинский <strong>Свинарник</strong></h1><p>Поставь предмет, лови куриц и остановись до того, как сработает бомба.</p></div>
+        <button className="pigsty-rules-button" onClick={() => setRulesOpen((value) => !value)}>Как играть? {rulesOpen ? "⌃" : "⌄"}</button>
+      </header>
+      {rulesOpen && <div className="pigsty-rules"><b>Выбери предмет и 1–3 бомбы.</b><span>На каждом ходу открой одно окно из четырёх. Курица повышает множитель, бомба забирает предмет. Выигрыш можно забрать после любой пойманной курицы.</span></div>}
+      <div className="pigsty-layout">
+        <aside className="pigsty-controls">
+          <p className="eyebrow">ТВОЯ СТАВКА</p>
+          <h2>{playing ? "Раунд идёт" : terminal ? (game?.status === "LOST" ? "Бомба сработала" : "Приз забран") : "Собери ставку"}</h2>
+          {!playing && !terminal && <>
+            <div className="pigsty-bombs"><b>Количество бомб</b><div>{([1, 2, 3] as const).map((count) => <button className={bombCount === count ? "chosen" : ""} key={count} onClick={() => setBombCount(count)}><span>{"💣".repeat(count)}</span><small>{count} {count === 1 ? "бомба" : "бомбы"}</small></button>)}</div></div>
+            <div className="pigsty-inventory"><b>Предмет из инвентаря</b>{inventory.length ? <div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div>
+          </>}
+          {(playing || terminal) && game && <div className="pigsty-stake-card"><img src={game.stakeItem.image} alt=""/><span><small>СТАВКА</small><b>{game.stakeItem.name}</b><em>{coins(game.stakeItem.price)} SC</em></span></div>}
+          {playing && game && <div className="pigsty-potential"><span>Текущий приз</span><b>{coins(game.payout)} SC</b><small>{multiplier(game.multiplier)} · {game.choices.length} куриц</small></div>}
+          {terminal && game && <div className={`pigsty-result ${game.status.toLowerCase()}`}><b>{game.status === "LOST" ? "Свинка попалась на бомбу" : "Свинка унесла приз"}</b>{game.status === "CASHED_OUT" && <strong>{coins(game.payout)} SC</strong>}</div>}
+          <button className={`pig-button pigsty-action ${playing ? "cashout" : ""}`} disabled={busy || (!playing && !terminal && !selectedItem)} onClick={playing ? cashout : terminal ? () => setGame(null) : start}>{playing ? `ЗАБРАТЬ ${game ? coins(game.payout) : ""} SC →` : terminal ? "НОВЫЙ РАУНД →" : "НАЧАТЬ ИГРУ →"}</button>
+        </aside>
+        <section className={`pigsty-stage ${playing ? "playing" : ""} ${game?.status?.toLowerCase() || "idle"}`}>
+          <div className="pigsty-stage-top"><span>🐷 СВИНАРНИК · ХОД {playing ? game!.round : game?.choices.length || 0}</span><b>{playing ? "ВЫБЕРИ ОДНО ОКНО" : terminal ? "РАУНД ЗАВЕРШЁН" : "ГОТОВ К ОХОТЕ"}</b></div>
+          <div className="pigsty-notice">{playing ? "Лови курицу, но не разбуди бомбу." : terminal && game?.status === "LOST" ? "Все бомбы этого хода показаны. Попробуй ещё раз." : "Выбери предмет слева и начни раунд."}</div>
+          <img className="pigsty-pig" src={pigstyPigImage} alt="Свинка-охотник" />
+          <div className="pigsty-windows">{Array.from({ length: 4 }, (_, choice) => {
+            const bomb = game?.status === "LOST" && game.revealedBombs?.includes(choice);
+            const picked = game?.status === "LOST" && lastChoice?.choice === choice;
+            const state = bomb ? "bomb" : picked ? "picked" : "";
+            return <button key={choice} disabled={!playing || busy} className={`pigsty-window ${state}`} onClick={() => choose(choice)}><span className="pigsty-window-roof"/><i>{bomb ? "💣" : picked ? "💥" : "❔"}</i><b>{bomb ? "БОМБА" : picked ? "ЛОВУШКА" : `ОКНО ${choice + 1}`}</b><small>{playing ? "Нажми, чтобы проверить" : bomb ? "вот где она была" : ""}</small></button>;
+          })}</div>
+          <div className="pigsty-stage-footer"><span>Бомб: <b>{game?.bombCount || bombCount}</b></span><span>Следующая курица: <b>{playing && game ? multiplier(game.multiplier * ({ 1: 1.24, 2: 1.78, 3: 3.18 }[game.bombCount])) : "?"}</b></span></div>
+        </section>
+      </div>
+    </section>
+  );
+}
 
 function PigRoadPage({
   token,
@@ -4116,14 +4250,14 @@ function GamesHub({
 }: {
   onOpen: (
     game:
-      | "upgrade" | "battles" | "naval" | "mines" | "road" | "contract" | "crash" | "boss",
+      | "upgrade" | "battles" | "naval" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss",
   ) => void;
   dailyWinners: DailyWinner[];
   onOpenProfile: (id: string) => void;
 }) {
   const games: Array<{
     id:
-      | "upgrade" | "battles" | "naval" | "mines" | "road" | "contract" | "crash" | "boss";
+      | "upgrade" | "battles" | "naval" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss";
     icon: string;
     eyebrow: string;
     title: string;
@@ -4161,6 +4295,14 @@ function GamesHub({
       title: "Свиные мины",
       text: "Открывай клетки, избегай бомб и забирай множитель когда захочешь.",
       action: "К минам",
+    },
+    {
+      id: "pigsty",
+      icon: "🐔",
+      eyebrow: "PIGSTY RISK",
+      title: "Свинарник",
+      text: "Поставь скин, лови куриц в четырёх окнах и остановись до взрыва.",
+      action: "В Свинарник",
     },
     {
       id: "road",
