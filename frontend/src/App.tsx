@@ -2635,8 +2635,8 @@ function PigstyPage({
         <button className="pigsty-rules-button" onClick={() => setRulesOpen((value) => !value)}>Как играть? {rulesOpen ? "⌃" : "⌄"}</button>
       </header>
       {rulesOpen && <div className="pigsty-rules"><b>Выбери предмет и 1–3 бомбы.</b><span>На каждом ходу открой одно окно из четырёх. Курица повышает множитель, бомба забирает предмет. Выигрыш можно забрать после любой пойманной курицы.</span></div>}
-      <div className="pigsty-layout">
-        <aside className="pigsty-controls">
+      <div className={`pigsty-layout ${game ? "pigsty-live" : ""}`}>
+        <aside className={`pigsty-controls ${game ? "pigsty-live" : ""}`}>
           <p className="eyebrow">ТВОЯ СТАВКА</p>
           <h2>{playing ? "Раунд идёт" : terminal ? (game?.status === "LOST" ? "Бомба сработала" : "Приз забран") : "Собери ставку"}</h2>
           {!playing && !terminal && <>
