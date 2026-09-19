@@ -2661,7 +2661,7 @@ function PigstyPage({
               const bomb = game.status === "LOST" && game.revealedBombs?.includes(choice);
               const picked = game.status === "LOST" && lastChoice?.choice === choice;
               const state = bomb ? "bomb" : picked ? "picked" : "";
-              return <button key={choice} disabled={!playing || busy} className={`pigsty-window ${state}`} onClick={() => choose(choice)}><span className="pigsty-window-roof"/><i>{bomb ? "💣" : picked ? "💥" : "❔"}</i><b>{bomb ? "БОМБА" : picked ? "ЛОВУШКА" : `ОКНО ${choice + 1}`}</b><small>{playing ? "Нажми, чтобы проверить" : bomb ? "вот где она была" : ""}</small></button>;
+              return <button key={choice} disabled={!playing || busy} className={`pigsty-window ${state}`} onClick={() => choose(choice)}><i>{bomb ? "💣" : picked ? "💥" : "?"}</i><b>{bomb ? "БОМБА" : picked ? "ЛОВУШКА" : `ОКНО ${choice + 1}`}</b><small>{playing ? "Нажми, чтобы проверить" : bomb ? "вот где она была" : ""}</small></button>;
             })}</div>
             <div className="pigsty-stage-footer"><span>Бомб: <b>{game.bombCount}</b></span><span>Следующая курица: <b>{playing ? multiplier(game.multiplier * ({ 1: 1.24, 2: 1.78, 3: 3.18 }[game.bombCount])) : "?"}</b></span></div>
           </section>
