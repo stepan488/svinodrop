@@ -511,6 +511,27 @@ app.use(express.json({ limit: '32kb' }));
 app.use(rateLimit);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, online: onlineSockets.size }));
+
+// Admin-toggleable "tech break" per game mode. Cached briefly in memory so a
+// hot-path bet endpoint doesn't hit the DB on every single request; the cache
+// is also dropped immediately whenever an admin changes the list.
+const MAINTENANCE_MODES = ['cases', 'upgrade', 'battles', 'naval', 'mines', 'pigsty', 'road', 'contract', 'crash', 'boss'] as const;
+type MaintenanceMode = (typeof MAINTENANCE_MODES)[number];
+let maintenanceCache: { modes: Set<string>; loadedAt: number } | null = null;
+async function getMaintenanceModes(): Promise<Set<string>> {
+  if (maintenanceCache && Date.now() - maintenanceCache.loadedAt < 4_000) return maintenanceCache.modes;
+  const row = await prisma.siteSetting.findUnique({ where: { key: 'maintenanceModes' } });
+  let modes: string[] = [];
+  try { modes = row ? JSON.parse(row.value) : []; } catch { modes = []; }
+  maintenanceCache = { modes: new Set(modes), loadedAt: Date.now() };
+  return maintenanceCache.modes;
+}
+async function assertModeOpen(mode: MaintenanceMode) {
+  const modes = await getMaintenanceModes();
+  if (modes.has(mode)) throw new Error('Этот режим сейчас на техническом перерыве. Загляни чуть позже 🐷🔧');
+}
+app.get('/api/maintenance', async (_req, res) => res.json({ modes: [...(await getMaintenanceModes())] }));
+
 app.get('/api/cases', async (_req, res) => {
   const cases = await prisma.case.findMany({ where: { active: true }, include: { items: { include: { item: { select: itemSelect } }, orderBy: { weight: 'desc' } } }, orderBy: { price: 'asc' } });
   // Magical cases deliberately keep the possible prizes secret from players.
@@ -556,6 +577,7 @@ app.post('/api/boss-fight/attack', auth, async (req: AuthedRequest, res) => {
   if (!attack) return res.status(400).json({ error: 'Выбери одну из атак на Фалыча.' });
   if (!bossEventState().active) return res.status(400).json({ error: 'Ивент «Битва с Фалычем» сейчас не активен.' });
   try {
+    await assertModeOpen('boss');
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       if (user.username.toLowerCase() === bossAdminUsername) throw new Error('Админский аккаунт не участвует в «Битве с Фалычем».');
@@ -790,6 +812,7 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
   const count = Number(req.body?.count); const requestKey = req.headers['idempotency-key'];
   if (!Number.isInteger(count) || count < 1 || count > 4 || typeof requestKey !== 'string' || requestKey.length < 12) return res.status(400).json({ error: 'Некорректный запрос открытия.' });
   try {
+    await assertModeOpen('cases');
     const result = await prisma.$transaction(async (tx) => {
       const replay = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: requestKey } } });
       if (replay) return replay.response as unknown as { balance: number; caseName: string; drops: Array<{ dropId: string; inventoryId: string; item: typeof itemSelect }> };
@@ -843,6 +866,7 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
   const { sourceInventoryIds, targetItemId, balanceStake = 0 } = req.body ?? {};
   if (!Array.isArray(sourceInventoryIds) || !sourceInventoryIds.length || sourceInventoryIds.length > 8 || new Set(sourceInventoryIds).size !== sourceInventoryIds.length || sourceInventoryIds.some((id) => typeof id !== 'string') || typeof targetItemId !== 'string' || !Number.isSafeInteger(balanceStake) || balanceStake < 0) return res.status(400).json({ error: 'Выберите от 1 до 8 разных предметов, цель и корректную ставку.' });
   try {
+    await assertModeOpen('upgrade');
     const outcome = await prisma.$transaction(async (tx) => {
       const sources = await tx.inventory.findMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null, revealed: true }, include: { item: true } });
       const target = await tx.item.findFirst({ where: { id: targetItemId, active: true, upgradeEligible: true } });
@@ -918,6 +942,7 @@ app.post('/api/mines/start', auth, async (req: AuthedRequest, res) => {
   const wager = money(req.body?.wager); const mineCount = Number(req.body?.mineCount);
   if (!wager || wager < 50_000 || wager > 55_500_000 || ![3, 6, 9].includes(mineCount)) return res.status(400).json({ error: 'Ставка — от 500 до 555 000 SC. Выбери 3, 6 или 9 мин.' });
   try {
+    await assertModeOpen('mines');
     const game = await prisma.$transaction(async (tx) => {
       const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: minesOpeningKey } } });
       if (current && isMinesRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущую игру в мины.');
@@ -1008,6 +1033,7 @@ app.post('/api/pigsty/start', auth, async (req: AuthedRequest, res) => {
   if (!inventoryId && amount === null) return res.status(400).json({ error: 'Выбери предмет или сумму ставки.' });
   if (amount !== null && (!Number.isSafeInteger(amount) || amount < 50_000 || amount > 55_500_000)) return res.status(400).json({ error: 'Ставка — от 500 до 555 000 SC.' });
   try {
+    await assertModeOpen('pigsty');
     const game = await prisma.$transaction(async (tx) => {
       const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } } });
       if (current && isPigstyRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущий раунд в Свинарнике.');
@@ -1093,6 +1119,7 @@ app.post('/api/road/start', auth, async (req: AuthedRequest, res) => {
   const wager = money(req.body?.wager);
   if (!wager || wager < 50_000 || wager > 55_500_000) return res.status(400).json({ error: 'Ставка — от 500 до 555 000 SC.' });
   try {
+    await assertModeOpen('road');
     const game = await prisma.$transaction(async (tx) => {
       const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: roadOpeningKey } } });
       if (current && isRoadRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущий забег.');
@@ -1175,6 +1202,7 @@ app.post('/api/contracts', auth, async (req: AuthedRequest, res) => {
   const riskMode = Boolean(req.body?.riskMode);
   if (!Array.isArray(sourceInventoryIds) || sourceInventoryIds.length < 3 || sourceInventoryIds.length > 10 || new Set(sourceInventoryIds).size !== sourceInventoryIds.length || sourceInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Выбери от 3 до 10 разных скинов для контракта.' });
   try {
+    await assertModeOpen('contract');
     const result = await prisma.$transaction(async (tx) => {
       const pending = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: contractPendingKey } } });
       if (pending && isContractPending(pending.response)) {
@@ -1316,6 +1344,7 @@ app.post('/api/crash/bet', auth, async (req: AuthedRequest, res) => {
   const skinInventoryIds = req.body?.skinInventoryIds || [];
   if (!Number.isSafeInteger(balanceStake) || balanceStake < 0 || balanceStake > 55_500_000 || !Array.isArray(skinInventoryIds) || new Set(skinInventoryIds).size !== skinInventoryIds.length || skinInventoryIds.some((id) => typeof id !== 'string')) return res.status(400).json({ error: 'Проверь ставку и выбранные скины.' });
   try {
+    await assertModeOpen('crash');
     const round = await ensureCrashRound();
     if (round.phase !== 'BETTING' || Date.now() >= new Date(round.bettingEndsAt).getTime()) throw new Error('Ставки на этот раунд уже закрыты.');
     const result = await prisma.$transaction(async (tx) => {
@@ -1437,6 +1466,7 @@ app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
   const { caseIds, playerLimit = 2, mode = 'NORMAL', private: privateBattle = false, fast = false } = req.body ?? {};
   if (!Array.isArray(caseIds) || !caseIds.length || caseIds.length > 30 || caseIds.some((id) => typeof id !== 'string') || ![2, 3, 4].includes(playerLimit) || !battleModes.has(mode) || typeof fast !== 'boolean') return res.status(400).json({ error: 'Выбери от 1 до 30 кейсов, 2–4 игроков и режим.' });
   try {
+    await assertModeOpen('battles');
     const created = await prisma.$transaction(async (tx) => {
       // Magic cases intentionally conceal their pool and can reveal several
       // rewards, so they are a solo-only mode and must never enter a battle.
@@ -1454,6 +1484,7 @@ app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
 });
 app.post('/api/battles/:id/join', auth, async (req: AuthedRequest, res) => {
   try {
+    await assertModeOpen('battles');
     const joined = await prisma.$transaction(async (tx) => {
       const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } });
       if (!battle || battle.status !== 'WAITING') throw new Error('В этот баттл уже нельзя войти.');
@@ -1471,7 +1502,7 @@ app.post('/api/battles/:id/join', auth, async (req: AuthedRequest, res) => {
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в баттл.' }); }
 });
 app.post('/api/battles/:id/bot', auth, async (req: AuthedRequest, res) => {
-  try { await prisma.$transaction(async (tx) => { const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!battle || battle.creatorId !== req.session!.id || battle.status !== 'WAITING') throw new Error('Добавить бота нельзя.'); if (battle.players.length >= battle.playerLimit) throw new Error('Нет свободного места.'); await tx.battlePlayer.create({ data: { battleId: battle.id, botName: `Свинобот #${crypto.randomInt(100, 999)}` } }); }); await settleBattle(req.params.id); res.json(await battleView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось добавить бота.' }); }
+  try { await assertModeOpen('battles'); await prisma.$transaction(async (tx) => { const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!battle || battle.creatorId !== req.session!.id || battle.status !== 'WAITING') throw new Error('Добавить бота нельзя.'); if (battle.players.length >= battle.playerLimit) throw new Error('Нет свободного места.'); await tx.battlePlayer.create({ data: { battleId: battle.id, botName: `Свинобот #${crypto.randomInt(100, 999)}` } }); }); await settleBattle(req.params.id); res.json(await battleView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось добавить бота.' }); }
 });
 
 type Cell = { x: number; y: number };
@@ -1509,8 +1540,8 @@ async function navalView(id: string, userId: string) {
 }
 app.get('/api/naval/games', auth, async (_req, res) => res.json(await prisma.navalGame.findMany({ where: { status: { in: ['WAITING', 'SETUP', 'PLAYING'] } }, include: { players: { include: { user: { select: { username: true } } } } }, orderBy: { createdAt: 'desc' }, take: 20 })));
 app.get('/api/naval/:id', auth, async (req: AuthedRequest, res) => { const game = await navalView(req.params.id, req.session!.id); if (!game) return res.status(404).json({ error: 'Игра не найдена.' }); res.json(game); });
-app.post('/api/naval', auth, async (req: AuthedRequest, res) => { const stake = Number(req.body?.stake); if (!Number.isSafeInteger(stake) || stake < 10_000 || stake > 50_000_000) return res.status(400).json({ error: 'Ставка — от 100 до 500 000 SC.' }); try { const game = await prisma.$transaction(async (tx) => { const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -stake, description: 'Ставка в морском бою' } }); return tx.navalGame.create({ data: { creatorId: user.id, stake, players: { create: { userId: user.id } } } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: game.id }); res.status(201).json(await navalView(game.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать игру.' }); } });
-app.post('/api/naval/:id/join', auth, async (req: AuthedRequest, res) => { try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'WAITING' || game.players.length !== 1 || game.creatorId === req.session!.id) throw new Error('Войти в эту игру нельзя.'); const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < game.stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: game.stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -game.stake, description: 'Ставка в морском бою' } }); await tx.navalPlayer.create({ data: { gameId: game.id, userId: user.id } }); await tx.navalGame.update({ where: { id: game.id }, data: { status: 'SETUP' } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в игру.' }); } });
+app.post('/api/naval', auth, async (req: AuthedRequest, res) => { const stake = Number(req.body?.stake); if (!Number.isSafeInteger(stake) || stake < 10_000 || stake > 50_000_000) return res.status(400).json({ error: 'Ставка — от 100 до 500 000 SC.' }); try { await assertModeOpen('naval'); const game = await prisma.$transaction(async (tx) => { const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -stake, description: 'Ставка в морском бою' } }); return tx.navalGame.create({ data: { creatorId: user.id, stake, players: { create: { userId: user.id } } } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: game.id }); res.status(201).json(await navalView(game.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось создать игру.' }); } });
+app.post('/api/naval/:id/join', auth, async (req: AuthedRequest, res) => { try { await assertModeOpen('naval'); await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'WAITING' || game.players.length !== 1 || game.creatorId === req.session!.id) throw new Error('Войти в эту игру нельзя.'); const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } }); if (user.balance < game.stake) throw new Error('Недостаточно свинокоинов.'); await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: game.stake } } }); await tx.transaction.create({ data: { userId: user.id, type: 'NAVAL_ENTRY', amount: -game.stake, description: 'Ставка в морском бою' } }); await tx.navalPlayer.create({ data: { gameId: game.id, userId: user.id } }); await tx.navalGame.update({ where: { id: game.id }, data: { status: 'SETUP' } }); }, { isolationLevel: 'Serializable' }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в игру.' }); } });
 app.post('/api/naval/:id/ships', auth, async (req: AuthedRequest, res) => { if (!validFleet(req.body?.ships)) return res.status(400).json({ error: 'Расставь короткий флот: два однопалубных, два двухпалубных и один трёхпалубный корабль.' }); try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); const player = game?.players.find((item) => item.userId === req.session!.id); if (!game || !player || !['SETUP', 'WAITING'].includes(game.status)) throw new Error('Расстановка недоступна.'); await tx.navalPlayer.update({ where: { id: player.id }, data: { ships: req.body.ships, ready: true } }); const ready = await tx.navalPlayer.count({ where: { gameId: game.id, ready: true } }); if (ready === 2) await tx.navalGame.update({ where: { id: game.id }, data: { status: 'PLAYING', turnUserId: game.creatorId, turnEndsAt: new Date(Date.now() + 30_000) } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось сохранить корабли.' }); } });
 app.post('/api/naval/:id/shot', auth, async (req: AuthedRequest, res) => { const x = Number(req.body?.x); const y = Number(req.body?.y); if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 7 || y < 0 || y > 7) return res.status(400).json({ error: 'Некорректная клетка.' }); try { await prisma.$transaction(async (tx) => { const game = await tx.navalGame.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!game || game.status !== 'PLAYING' || game.turnUserId !== req.session!.id) throw new Error('Сейчас ход соперника.'); const enemy = game.players.find((player) => player.userId !== req.session!.id)!; const hits = (enemy.shots as NavalShot[]) || []; if (hits.some((shot) => shot.x === x && shot.y === y)) throw new Error('Ты уже стрелял в эту клетку.'); const shipCells = enemy.ships as Cell[]; const hit = shipCells.some((cell) => cell.x === x && cell.y === y); const priorHits = hits.filter((shot) => shot.hit); const ship = hit ? fleetGroups(shipCells).find((group) => group.some((cell) => cell.x === x && cell.y === y)) : undefined; const sunkShip = Boolean(ship && ship.every((cell) => [...priorHits, { x, y, hit }].some((shot) => shot.hit && shot.x === cell.x && shot.y === cell.y))); const finalShot: NavalShot = { x, y, hit, sunk: sunkShip }; const shots = [...hits, finalShot, ...(sunkShip && ship ? closedShipPerimeter(ship, [...hits, finalShot]) : [])]; await tx.navalPlayer.update({ where: { id: enemy.id }, data: { shots } }); const sunk = shipCells.every((cell) => shots.some((shot) => shot.hit && shot.x === cell.x && shot.y === cell.y)); if (sunk) { await tx.navalGame.update({ where: { id: game.id }, data: { status: 'FINISHED', winnerUserId: req.session!.id, finishedAt: new Date(), turnEndsAt: null } }); await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: game.stake * 2 } } }); await tx.transaction.create({ data: { userId: req.session!.id, type: 'NAVAL_WIN', amount: game.stake * 2, description: 'Победа в морском бою' } }); } else await tx.navalGame.update({ where: { id: game.id }, data: { turnUserId: hit ? req.session!.id : enemy.userId, turnEndsAt: new Date(Date.now() + (enemy.botName && !hit ? 1_200 : 30_000)) } }); }); io.emit('naval:updated', { id: req.params.id }); res.json(await navalView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Выстрел не выполнен.' }); } });
 async function advanceNavalGames() {
@@ -1670,6 +1701,17 @@ app.get('/api/admin/items', auth, admin, async (_req, res) => res.json(await pri
 app.post('/api/admin/items', auth, admin, async (req: AuthedRequest, res) => { const { id, name, wear, price, image, rarity, upgradeEligible = true } = req.body ?? {}; if (![id, name, wear, image, rarity].every((value) => typeof value === 'string') || typeof upgradeEligible !== 'boolean' || !money(price)) return res.status(400).json({ error: 'Проверьте данные предмета.' }); try { const item = await prisma.item.create({ data: { id, name, wear, price, image, rarity, upgradeEligible } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_CREATE', metadata: { itemId: item.id, upgradeEligible } } }); res.status(201).json(item); } catch { res.status(409).json({ error: 'Предмет с таким ID уже существует.' }); } });
 app.get('/api/admin/site-settings', auth, admin, async (_req, res) => res.json(Object.fromEntries((await prisma.siteSetting.findMany()).map((entry) => [entry.key, entry.value]))));
 app.put('/api/admin/site-settings', auth, admin, async (req: AuthedRequest, res) => { const collectionTitle = String(req.body?.collectionTitle || '').trim(); if (!collectionTitle || collectionTitle.length > 64) return res.status(400).json({ error: 'Название должно быть от 1 до 64 символов.' }); await prisma.siteSetting.upsert({ where: { key: 'collectionTitle' }, create: { key: 'collectionTitle', value: collectionTitle }, update: { value: collectionTitle } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'COLLECTION_TITLE_UPDATE', metadata: { collectionTitle } } }); res.json({ collectionTitle }); });
+app.get('/api/admin/maintenance', auth, admin, async (_req, res) => res.json({ modes: [...(await getMaintenanceModes())], available: MAINTENANCE_MODES }));
+app.put('/api/admin/maintenance', auth, admin, async (req: AuthedRequest, res) => {
+  const input = Array.isArray(req.body?.modes) ? req.body.modes.filter((mode: unknown): mode is MaintenanceMode => typeof mode === 'string' && (MAINTENANCE_MODES as readonly string[]).includes(mode)) : null;
+  if (!input) return res.status(400).json({ error: 'Некорректный список режимов.' });
+  const modes = [...new Set(input)];
+  await prisma.siteSetting.upsert({ where: { key: 'maintenanceModes' }, create: { key: 'maintenanceModes', value: JSON.stringify(modes) }, update: { value: JSON.stringify(modes) } });
+  maintenanceCache = null;
+  await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'MAINTENANCE_UPDATE', metadata: { modes } } });
+  io.emit('maintenance:update');
+  res.json({ modes });
+});
 app.patch('/api/admin/items/:id', auth, admin, async (req: AuthedRequest, res) => { const { name, wear, price, image, rarity, active, upgradeEligible } = req.body ?? {}; const item = await prisma.item.update({ where: { id: req.params.id }, data: { ...(typeof name === 'string' ? { name } : {}), ...(typeof wear === 'string' ? { wear } : {}), ...(money(price) ? { price } : {}), ...(typeof image === 'string' ? { image } : {}), ...(typeof rarity === 'string' ? { rarity } : {}), ...(typeof active === 'boolean' ? { active } : {}), ...(typeof upgradeEligible === 'boolean' ? { upgradeEligible } : {}) } }); await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'ITEM_UPDATE', metadata: { itemId: item.id, upgradeEligible: typeof upgradeEligible === 'boolean' ? upgradeEligible : undefined } } }); res.json(item); });
 app.get('/api/admin/cases', auth, admin, async (_req, res) => res.json(await prisma.case.findMany({ include: { items: { include: { item: { select: itemSelect } } } } })));
 app.post('/api/admin/cases', auth, admin, async (req: AuthedRequest, res) => {
