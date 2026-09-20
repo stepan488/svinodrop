@@ -6788,7 +6788,7 @@ function AdminPanelV2({
 }) {
   void AdminPanel;
   const [tab, setTab] = useState<
-    "users" | "cases" | "items" | "promos" | "giveaways" | "chat" | "logs"
+    "users" | "cases" | "items" | "promos" | "giveaways" | "chat" | "logs" | "maintenance"
   >("users");
   const [users, setUsers] = useState<
     {
@@ -6805,9 +6805,43 @@ function AdminPanelV2({
     undefined,
   );
   const [giveawayEditor, setGiveawayEditor] = useState(false);
+  const [maintenanceModes, setMaintenanceModes] = useState<string[]>([]);
+  const MODE_LABELS: Record<string, string> = {
+    cases: "Кейсы",
+    upgrade: "Апгрейд",
+    battles: "Батлы кейсов",
+    naval: "Морской бой",
+    mines: "Мины",
+    pigsty: "Свинарник",
+    road: "Свиная дорога",
+    contract: "Контракт",
+    crash: "Свинокраш",
+    boss: "Босс Фалыч",
+  };
+  const toggleMaintenance = async (mode: string) => {
+    const next = maintenanceModes.includes(mode)
+      ? maintenanceModes.filter((item) => item !== mode)
+      : [...maintenanceModes, mode];
+    try {
+      const data = await request("/api/admin/maintenance", token, {
+        method: "PUT",
+        body: JSON.stringify({ modes: next }),
+      });
+      setMaintenanceModes(data.modes);
+      toast(
+        next.includes(mode)
+          ? "Режим отправлен на технический перерыв"
+          : "Режим снова включён для всех",
+      );
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Не удалось изменить статус");
+    }
+  };
   const load = async () => {
     try {
       if (tab === "users") setUsers(await request("/api/admin/users", token));
+      else if (tab === "maintenance")
+        setMaintenanceModes((await request("/api/admin/maintenance", token)).modes);
       else setRows(await request(`/api/admin/${tab}`, token));
     } catch (error) {
       toast(error instanceof Error ? error.message : "Ошибка загрузки");
@@ -7106,6 +7140,7 @@ function AdminPanelV2({
               ["promos", "Промокоды"],
               ["chat", "Модерация чата"],
               ["logs", "Логи"],
+              ["maintenance", "Технические работы"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -7347,6 +7382,58 @@ function AdminPanelV2({
                 </span>
               </div>
             ))}
+          {tab === "maintenance" && (
+            <div>
+              <p style={{ color: "#af7e94", fontSize: 12, margin: "0 0 14px" }}>
+                Включи тумблер — режим уйдёт на технический перерыв: игроки увидят
+                заглушку и не смогут делать новые ставки. Уже идущие раунды
+                доигрываются как обычно. Выключишь в любой момент — режим сразу
+                снова доступен всем.
+              </p>
+              {Object.entries(MODE_LABELS).map(([id, label]) => {
+                const blocked = maintenanceModes.includes(id);
+                return (
+                  <div
+                    key={id}
+                    className="transaction"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                    }}
+                  >
+                    <span>
+                      <b>{label}</b>
+                      <br />
+                      <small style={{ color: blocked ? "#ff8ba3" : "#7fd9a0" }}>
+                        {blocked ? "На техническом перерыве" : "Работает"}
+                      </small>
+                    </span>
+                    <button
+                      className="login"
+                      style={
+                        blocked
+                          ? {
+                              borderColor: "#ff5a6b",
+                              color: "#ffd7dc",
+                              background: "#3a0d16",
+                            }
+                          : {
+                              borderColor: "#4bdc7e",
+                              color: "#c9ffd9",
+                              background: "#123a24",
+                            }
+                      }
+                      onClick={() => toggleMaintenance(id)}
+                    >
+                      {blocked ? "Включить обратно" : "Отправить на перерыв"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       </div>
     </section>
