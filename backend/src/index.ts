@@ -1001,18 +1001,33 @@ app.get('/api/pigsty', auth, async (req: AuthedRequest, res) => {
   res.json({ game: game ? publicPigsty(game) : null });
 });
 app.post('/api/pigsty/start', auth, async (req: AuthedRequest, res) => {
-  const bombCount = Number(req.body?.bombCount); const inventoryId = typeof req.body?.inventoryId === 'string' ? req.body.inventoryId : '';
-  if (![1, 2, 3].includes(bombCount) || !inventoryId) return res.status(400).json({ error: 'Выбери предмет и от 1 до 3 бомб.' });
+  const bombCount = Number(req.body?.bombCount);
+  const inventoryId = typeof req.body?.inventoryId === 'string' ? req.body.inventoryId : '';
+  const amount = req.body?.amount === undefined ? null : Number(req.body.amount);
+  if (![1, 2, 3].includes(bombCount)) return res.status(400).json({ error: 'Выбери от 1 до 3 бомб.' });
+  if (!inventoryId && amount === null) return res.status(400).json({ error: 'Выбери предмет или сумму ставки.' });
+  if (amount !== null && (!Number.isSafeInteger(amount) || amount < 50_000 || amount > 55_500_000)) return res.status(400).json({ error: 'Ставка — от 500 до 555 000 SC.' });
   try {
     const game = await prisma.$transaction(async (tx) => {
       const current = await tx.opening.findUnique({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } } });
       if (current && isPigstyRecord(current.response) && current.response.status === 'PLAYING') throw new Error('Сначала заверши текущий раунд в Свинарнике.');
-      const inventory = await tx.inventory.findFirst({ where: { id: inventoryId, userId: req.session!.id, removedAt: null }, include: { item: { select: itemSelect } } });
-      if (!inventory) throw new Error('Выбранный предмет уже недоступен.');
-      const stakeItem: PigstyStakeItem = inventory.item;
+      let stakeItem: PigstyStakeItem;
+      let betDescription: string;
+      if (inventoryId) {
+        const inventory = await tx.inventory.findFirst({ where: { id: inventoryId, userId: req.session!.id, removedAt: null }, include: { item: { select: itemSelect } } });
+        if (!inventory) throw new Error('Выбранный предмет уже недоступен.');
+        stakeItem = inventory.item;
+        betDescription = `Ставка в «Свинарнике» · ${inventory.item.name}`;
+        await tx.inventory.update({ where: { id: inventory.id }, data: { removedAt: new Date() } });
+      } else {
+        const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+        if (user.balance < amount!) throw new Error('Недостаточно свинокоинов для этой ставки.');
+        stakeItem = { id: 'BALANCE', name: 'Свинокоины', wear: '', price: amount!, image: '', rarity: 'BALANCE' };
+        betDescription = `Ставка в «Свинарнике» · ${(amount! / 100).toLocaleString('ru-RU')} SC`;
+        await tx.user.update({ where: { id: req.session!.id }, data: { balance: { decrement: amount! } } });
+      }
       const next: PigstyRecord = { version: 1, status: 'PLAYING', bombCount: bombCount as 1 | 2 | 3, stakeItem, activeBombs: pigstyBombs(bombCount as 1 | 2 | 3), choices: [], createdAt: new Date().toISOString() };
-      await tx.inventory.update({ where: { id: inventory.id }, data: { removedAt: new Date() } });
-      await tx.transaction.create({ data: { userId: req.session!.id, type: 'PIGSTY_BET', amount: 0, description: `Ставка в «Свинарнике» · ${inventory.item.name}` } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'PIGSTY_BET', amount: 0, description: betDescription } });
       await tx.opening.upsert({ where: { userId_key: { userId: req.session!.id, key: pigstyOpeningKey } }, create: { userId: req.session!.id, key: pigstyOpeningKey, response: next }, update: { response: next } });
       return next;
     }, { isolationLevel: 'Serializable' });
