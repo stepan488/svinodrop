@@ -1705,7 +1705,7 @@ app.get('/api/admin/maintenance', auth, admin, async (_req, res) => res.json({ m
 app.put('/api/admin/maintenance', auth, admin, async (req: AuthedRequest, res) => {
   const input = Array.isArray(req.body?.modes) ? req.body.modes.filter((mode: unknown): mode is MaintenanceMode => typeof mode === 'string' && (MAINTENANCE_MODES as readonly string[]).includes(mode)) : null;
   if (!input) return res.status(400).json({ error: 'Некорректный список режимов.' });
-  const modes = [...new Set(input)];
+  const modes: string[] = [...new Set(input)] as string[];
   await prisma.siteSetting.upsert({ where: { key: 'maintenanceModes' }, create: { key: 'maintenanceModes', value: JSON.stringify(modes) }, update: { value: JSON.stringify(modes) } });
   maintenanceCache = null;
   await prisma.adminLog.create({ data: { adminId: req.session!.id, action: 'MAINTENANCE_UPDATE', metadata: { modes } } });
