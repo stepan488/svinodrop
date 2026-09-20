@@ -2576,6 +2576,9 @@ function PigstyPage({
   const [game, setGame] = useState<PigstyGame | null>(null);
   const [bombCount, setBombCount] = useState<1 | 2 | 3>(1);
   const [inventoryId, setInventoryId] = useState("");
+  const [stakeMode, setStakeMode] = useState<"item" | "balance">(() => (inventory.length ? "item" : "balance"));
+  const [amount, setAmount] = useState(1000);
+  const clampAmount = (value: number) => Math.max(500, Math.min(555000, Math.round(value)));
   const [busy, setBusy] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const playing = game?.status === "PLAYING";
@@ -2590,10 +2593,13 @@ function PigstyPage({
   }, [token]);
   const start = async () => {
     if (!user) return onRequireAuth();
-    if (!inventoryId) return toast("Выбери предмет из инвентаря для ставки.");
+    if (stakeMode === "item" && !inventoryId) return toast("Выбери предмет из инвентаря для ставки.");
+    if (stakeMode === "balance" && (amount < 500 || amount > 555000)) return toast("Ставка — от 500 до 555 000 SC.");
+    if (stakeMode === "balance" && amount * 100 > (user.balance || 0)) return toast("Недостаточно свинокоинов для такой ставки.");
     setBusy(true);
     try {
-      const data = await request("/api/pigsty/start", token, { method: "POST", body: JSON.stringify({ inventoryId, bombCount }) });
+      const body = stakeMode === "item" ? { inventoryId, bombCount } : { amount: amount * 100, bombCount };
+      const data = await request("/api/pigsty/start", token, { method: "POST", body: JSON.stringify(body) });
       setGame(data.game);
       playSiteSound("contract");
       await onBalance();
@@ -2602,18 +2608,27 @@ function PigstyPage({
       toast(error instanceof Error ? error.message : "Не удалось начать игру");
     } finally { setBusy(false); }
   };
+  const [flash, setFlash] = useState<{ choice: number } | null>(null);
   const choose = async (choice: number) => {
     if (!playing || busy) return;
     setBusy(true);
     try {
       const data = await request("/api/pigsty/open", token, { method: "POST", body: JSON.stringify({ choice }) });
-      setGame(data.game);
-      playSiteSound(data.game.status === "LOST" ? "hit" : "card");
-      if (data.game.status === "LOST") toast("Бум! Все бомбы в этом окне раскрыты.");
-      else toast(`Курица поймана! Теперь ${multiplier(data.game.multiplier)}.`);
+      if (data.game.status === "LOST") {
+        setGame(data.game);
+        playSiteSound("hit");
+        toast("Бум! Все бомбы в этом окне раскрыты.");
+        setBusy(false);
+      } else {
+        setFlash({ choice });
+        playSiteSound("card");
+        toast(`Курица поймана! Теперь ${multiplier(data.game.multiplier)}.`);
+        window.setTimeout(() => { setGame(data.game); setFlash(null); setBusy(false); }, 700);
+      }
     } catch (error) {
       toast(error instanceof Error ? error.message : "Не удалось открыть окно");
-    } finally { setBusy(false); }
+      setBusy(false);
+    }
   };
   const cashout = async () => {
     if (!playing || !game?.choices.length || busy) return;
@@ -2636,36 +2651,57 @@ function PigstyPage({
         <button className="pigsty-rules-button" onClick={() => setRulesOpen((value) => !value)}>Как играть? {rulesOpen ? "⌃" : "⌄"}</button>
       </header>
       {rulesOpen && <div className="pigsty-rules"><b>Выбери предмет и 1–3 бомбы.</b><span>На каждом ходу открой одно окно из четырёх. Курица повышает множитель, бомба забирает предмет. Выигрыш можно забрать после любой пойманной курицы.</span></div>}
-      <div className={`pigsty-layout ${game ? "pigsty-live" : "pigsty-setup"}`}>
-        {!game && (
-          <aside className="pigsty-controls pigsty-standalone">
-            <p className="eyebrow">ТВОЯ СТАВКА</p>
-            <h2>Собери ставку</h2>
-            <div className="pigsty-bombs"><b>Количество бомб</b><div>{([1, 2, 3] as const).map((count) => <button className={bombCount === count ? "chosen" : ""} key={count} onClick={() => setBombCount(count)}><span>{"💣".repeat(count)}</span><small>{count} {count === 1 ? "бомба" : "бомбы"}</small></button>)}</div></div>
-            <div className="pigsty-inventory"><b>Предмет из инвентаря</b>{inventory.length ? <div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div>
-            <button className="pig-button pigsty-action" disabled={busy || !selectedItem} onClick={start}>НАЧАТЬ ИГРУ →</button>
-          </aside>
-        )}
-        {game && (
-          <section className={`pigsty-stage pigsty-fullwidth ${playing ? "playing" : ""} ${game.status.toLowerCase()}`}>
+      <div className="pigsty-layout">
+        <section className={`pigsty-stage pigsty-fullwidth ${playing ? "playing" : ""} ${game ? game.status.toLowerCase() : "setup"}`}>
+          <img className={`pigsty-pig ${!game ? "pigsty-pig-idle" : ""}`} src={pigstyPigImage} alt="Свинка-охотник" />
+          {!game && (
+            <div className="pigsty-setup-panel">
+              <p className="eyebrow">ТВОЯ СТАВКА</p>
+              <h2>Собери ставку</h2>
+              <div className="pigsty-bombs"><b>Количество бомб</b><div>{([1, 2, 3] as const).map((count) => <button className={bombCount === count ? "chosen" : ""} key={count} onClick={() => setBombCount(count)}><span className="pigsty-bomb-dots">{Array.from({ length: count }, (_, i) => <i key={i}/>)}</span><small>{count} {count === 1 ? "бомба" : "бомбы"}</small></button>)}</div></div>
+              <div className="pigsty-stake-tabs">
+                <button className={stakeMode === "item" ? "chosen" : ""} onClick={() => setStakeMode("item")}>🗡 Инвентарь</button>
+                <button className={stakeMode === "balance" ? "chosen" : ""} onClick={() => setStakeMode("balance")}>💳 Баланс</button>
+              </div>
+              {stakeMode === "item" ? (
+                <div className="pigsty-inventory">{inventory.length ? <div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div>
+              ) : (
+                <div className="pigsty-amount">
+                  <div className="pigsty-amount-stepper">
+                    <button type="button" onClick={() => setAmount((value) => clampAmount(value - 100))}>−</button>
+                    <span>🪙 {amount.toLocaleString("ru-RU")} SC</span>
+                    <button type="button" onClick={() => setAmount((value) => clampAmount(value + 100))}>+</button>
+                  </div>
+                  <div className="pigsty-amount-presets">
+                    <button type="button" onClick={() => setAmount((value) => clampAmount(value / 2))}>1/2</button>
+                    <button type="button" onClick={() => setAmount((value) => clampAmount(value * 2))}>×2</button>
+                    <button type="button" onClick={() => setAmount((value) => clampAmount(value * 3))}>×3</button>
+                    <button type="button" onClick={() => setAmount(clampAmount((user?.balance || 0) / 100))}>Всё</button>
+                  </div>
+                </div>
+              )}
+              <button className="pig-button pigsty-action" disabled={busy || (stakeMode === "item" ? !selectedItem : amount < 500)} onClick={start}>НАЧАТЬ ИГРУ →</button>
+            </div>
+          )}
+          {game && (<>
             <div className="pigsty-stage-bar">
-              <div className="pigsty-stake-chip"><img src={game.stakeItem.image} alt=""/><span><small>СТАВКА</small><b>{game.stakeItem.name}</b></span><em>{coins(game.stakeItem.price)} SC</em></div>
-              {playing && <div className="pigsty-potential-chip"><span>Текущий приз</span><b>{coins(game.payout)} SC</b><small>{multiplier(game.multiplier)} · {game.choices.length} куриц</small></div>}
+              <div className="pigsty-stake-chip">{game.stakeItem.id === "BALANCE" ? <span className="pigsty-coin-icon">🐷</span> : <img src={game.stakeItem.image} alt=""/>}<span><small>СТАВКА</small><b>{game.stakeItem.id === "BALANCE" ? "Свинокоины" : game.stakeItem.name}</b></span><em>{coins(game.stakeItem.price)} SC</em></div>
+              {playing && <div className={`pigsty-prize ${flash ? "pulse" : ""}`}><span>МОЖЕШЬ ЗАБРАТЬ ПРЯМО СЕЙЧАС</span><b>{coins(game.payout)} SC</b><small>{multiplier(game.multiplier)} · поймано {game.choices.length} {game.choices.length === 1 ? "курица" : "курицы"}</small></div>}
               {terminal && <div className={`pigsty-result-chip ${game.status.toLowerCase()}`}><b>{game.status === "LOST" ? "Свинка попалась на бомбу" : "Свинка унесла приз"}</b>{game.status === "CASHED_OUT" && <strong>{coins(game.payout)} SC</strong>}</div>}
               <button className={`pig-button pigsty-action-inline ${playing ? "cashout" : ""}`} disabled={busy} onClick={playing ? cashout : () => setGame(null)}>{playing ? `ЗАБРАТЬ ${coins(game.payout)} SC →` : "НОВЫЙ РАУНД →"}</button>
             </div>
-            <div className="pigsty-stage-top"><span>🐷 СВИНАРНИК · ХОД {playing ? game.round : game.choices.length || 0}</span><b>{playing ? "ВЫБЕРИ ОДНО ОКНО" : terminal ? "РАУНД ЗАВЕРШЁН" : "ГОТОВ К ОХОТЕ"}</b></div>
-            <div className="pigsty-notice">{playing ? "Лови курицу, но не разбуди бомбу." : terminal && game.status === "LOST" ? "Все бомбы этого хода показаны. Попробуй ещё раз." : "Выбери предмет слева и начни раунд."}</div>
-            <img className="pigsty-pig" src={pigstyPigImage} alt="Свинка-охотник" />
+            <div className="pigsty-stage-top"><span>🐷 СВИНАРНИК · ХОД {playing ? game.round : game.choices.length || 0}</span><b>{playing ? "ВЫБЕРИ ОДНО ОКНО" : "РАУНД ЗАВЕРШЁН"}</b></div>
+            {playing && <div className="pigsty-notice">Лови курицу, но не разбуди бомбу.</div>}
             <div className="pigsty-windows">{Array.from({ length: 4 }, (_, choice) => {
               const bomb = game.status === "LOST" && game.revealedBombs?.includes(choice);
               const picked = game.status === "LOST" && lastChoice?.choice === choice;
-              const state = bomb ? "bomb" : picked ? "picked" : "";
-              return <button key={choice} disabled={!playing || busy} className={`pigsty-window ${state}`} onClick={() => choose(choice)}><i>{bomb ? "💣" : picked ? "💥" : "?"}</i><b>{bomb ? "БОМБА" : picked ? "ЛОВУШКА" : `ОКНО ${choice + 1}`}</b><small>{playing ? "Нажми, чтобы проверить" : bomb ? "вот где она была" : ""}</small></button>;
+              const caught = flash?.choice === choice;
+              const state = bomb ? "bomb" : picked ? "picked" : caught ? "caught" : "";
+              return <button key={choice} disabled={!playing || busy} className={`pigsty-window ${state}`} onClick={() => choose(choice)}><i>{bomb ? "💣" : picked ? "💥" : caught ? "🐔" : "?"}</i><b>{bomb ? "БОМБА" : picked ? "ЛОВУШКА" : caught ? "ПОЙМАНА!" : `ОКНО ${choice + 1}`}</b><small>{caught ? `+${multiplier(game.multiplier)}` : playing ? "Нажми, чтобы проверить" : bomb ? "вот где она была" : ""}</small></button>;
             })}</div>
             <div className="pigsty-stage-footer"><span>Бомб: <b>{game.bombCount}</b></span><span>Следующая курица: <b>{playing ? multiplier(game.multiplier * ({ 1: 1.24, 2: 1.78, 3: 3.18 }[game.bombCount])) : "?"}</b></span></div>
-          </section>
-        )}
+          </>)}
+        </section>
       </div>
     </section>
   );

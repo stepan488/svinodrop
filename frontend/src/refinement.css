@@ -236,18 +236,45 @@
 .pigsty-stage.pigsty-fullwidth{width:100%;min-height:560px;animation:pigsty-panel-in .35s ease}
 @keyframes pigsty-panel-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 .pigsty-stage-bar{position:relative;z-index:3;display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:16px}
-.pigsty-stake-chip,.pigsty-potential-chip,.pigsty-result-chip{display:flex;align-items:center;gap:8px;border:1px solid #3c6b45;background:#0f2417d9;border-radius:13px;padding:8px 13px;font-size:10px;color:#bfe6ad}
+.pigsty-stake-chip,.pigsty-result-chip{display:flex;align-items:center;gap:8px;border:1px solid #3c6b45;background:#0f2417d9;border-radius:13px;padding:8px 13px;font-size:10px;color:#bfe6ad}
 .pigsty-stake-chip img{width:26px;height:26px;object-fit:contain;border-radius:6px;background:#173322}
 .pigsty-stake-chip span{display:flex;flex-direction:column;gap:1px}
-.pigsty-stake-chip small,.pigsty-potential-chip span{font-size:8px;letter-spacing:.4px;color:#8fb87f;text-transform:uppercase}
+.pigsty-stake-chip small{font-size:8px;letter-spacing:.4px;color:#8fb87f;text-transform:uppercase}
 .pigsty-stake-chip b{font-size:11px;color:#eafcd8}
 .pigsty-stake-chip em{margin-left:2px;font-style:normal;font-weight:900;color:#f5eb9a}
-.pigsty-potential-chip{flex-direction:column;align-items:flex-start;gap:2px}
-.pigsty-potential-chip b{font-size:14px;color:#d9ff8d}
-.pigsty-potential-chip small{color:#8fb87f}
+.pigsty-prize{display:flex;flex-direction:column;align-items:flex-start;gap:1px;border:1.5px solid #8dffb666;background:linear-gradient(160deg,#123a24f0,#0d2b1af5);border-radius:14px;padding:9px 18px;box-shadow:0 0 0 #0000;transition:box-shadow .25s,border-color .25s}
+.pigsty-prize span{font-size:8px;letter-spacing:.5px;color:#8fe6ab;text-transform:uppercase;font-weight:800}
+.pigsty-prize b{font-size:22px;line-height:1.15;color:#c9ff8f;text-shadow:0 0 10px #c9ff8f88,0 0 26px #7dff5a55;font-weight:900}
+.pigsty-prize small{color:#8fb87f;font-size:9px}
+.pigsty-prize.pulse{border-color:#c9ff8f;box-shadow:0 0 0 4px #8dffb62e,0 0 34px #7dff5a66;animation:pigsty-prize-pop .55s ease}
+@keyframes pigsty-prize-pop{0%{transform:scale(1)}35%{transform:scale(1.08)}100%{transform:scale(1)}}
 .pigsty-result-chip{flex-direction:column;align-items:flex-start;gap:2px;border-color:#5a3a2a}
 .pigsty-result-chip.lost{border-color:#a34848;background:#2a1213d9}
 .pigsty-result-chip strong{color:#d9ff8d;font-size:13px}
 .pigsty-action-inline{margin-left:auto;padding:11px 20px;font-size:11px;white-space:nowrap}
-@media(max-width:590px){.pigsty-action-inline{margin-left:0;width:100%}}
+.pigsty-window.caught{border-color:#8dffb6;background:linear-gradient(160deg,#123a24e6,#0a2117f0);box-shadow:inset 0 0 26px #6dff8f55,0 0 40px #4dff8499;animation:pigsty-caught-pop .5s ease}
+.pigsty-window.caught i{animation:none;color:#eaffea;text-shadow:0 0 10px #baffc9e6,0 0 26px #6dff8fbb}
+.pigsty-window.caught small{color:#c9ff8f;font-weight:800}
+@keyframes pigsty-caught-pop{0%{transform:scale(1)}40%{transform:scale(1.06)}100%{transform:scale(1)}}
+@media(max-width:590px){.pigsty-action-inline{margin-left:0;width:100%}.pigsty-prize{width:100%}.pigsty-prize b{font-size:18px}}
 @keyframes pigsty-neon-flicker{0%,19%,21%,23%,54%,56%,100%{opacity:1}20%,55%{opacity:.72}}
+
+/* Setup now lives inside the same farm-background stage as gameplay, as a glass panel on the left, so the pig and scenery stay visible instead of a big empty page. */
+.pigsty-setup-panel{position:absolute;z-index:3;left:20px;top:50%;transform:translateY(-50%);width:300px;max-width:calc(100% - 40px);max-height:calc(100% - 36px);overflow-y:auto;background:#0e2016ea;backdrop-filter:blur(10px);border:1.5px solid #3fe6a04a;border-radius:18px;padding:20px 20px 22px;box-shadow:0 20px 44px #000a}
+.pigsty-setup-panel h2{margin:2px 0 14px;font-size:19px}
+.pigsty-pig.pigsty-pig-idle{right:36px;left:auto;transform:none;opacity:.92}
+.pigsty-stake-tabs{display:flex;gap:6px;margin:14px 0 12px;padding:4px;border:1px solid #3c6b45;border-radius:99px;background:#0a1811}
+.pigsty-stake-tabs button{flex:1;border:0;border-radius:99px;padding:9px 6px;background:transparent;color:#9fc79a;font-size:10px;font-weight:800;cursor:pointer;transition:background .2s,color .2s}
+.pigsty-stake-tabs button.chosen{background:linear-gradient(145deg,#5fdc7e,#2fa85a);color:#0c2013;box-shadow:0 4px 14px #2fa85a55}
+.pigsty-bomb-dots{display:flex;gap:4px;align-items:center;justify-content:center;height:20px}
+.pigsty-bomb-dots i{display:block;width:9px;height:9px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#ff9b6b,#c23a2f 70%);box-shadow:0 0 7px #ff5a3ba6}
+.pigsty-amount{margin-top:2px}
+.pigsty-amount-stepper{display:flex;align-items:center;gap:8px;border:1px solid #4b6b48;border-radius:12px;background:#172719;padding:6px}
+.pigsty-amount-stepper button{width:34px;height:34px;border:1px solid #4b6b48;border-radius:9px;background:#213b20;color:#d9ff8d;font-size:16px;font-weight:900;cursor:pointer}
+.pigsty-amount-stepper span{flex:1;text-align:center;font-size:14px;font-weight:900;color:#eafcd8}
+.pigsty-amount-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.pigsty-amount-presets button{border:1px solid #4b6b48;border-radius:9px;background:#172719;color:#b9d7af;padding:8px 4px;font-size:9px;font-weight:800;cursor:pointer}
+.pigsty-amount-presets button:hover{border-color:#c7ff70;color:#fff7bd}
+.pigsty-coin-icon{display:grid;place-items:center;width:26px;height:26px;border-radius:6px;background:#173322;font-size:15px}
+@media(max-width:900px){.pigsty-setup-panel{left:16px}}
+@media(max-width:590px){.pigsty-setup-panel{position:static;top:auto;left:auto;transform:none;width:100%;max-width:100%;max-height:none;margin:0 0 12px}.pigsty-pig.pigsty-pig-idle{display:none}}
