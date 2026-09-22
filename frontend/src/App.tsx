@@ -776,6 +776,20 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("svino-page", page);
   }, [page]);
+  // A case is a place in the app just like a game page.  Keep its id (never
+  // the unrevealed result) so a refresh returns the player to the same case.
+  useEffect(() => {
+    if (!casesReady || selectedCase) return;
+    const savedCaseId = localStorage.getItem("svino-open-case");
+    if (!savedCaseId) return;
+    const savedCase = cases.find((item) => item.id === savedCaseId);
+    if (savedCase) {
+      setSelectedCase(savedCase);
+      setCount(savedCase.maxOpen === 1 ? 1 : 1);
+    } else {
+      localStorage.removeItem("svino-open-case");
+    }
+  }, [casesReady, cases, selectedCase]);
   useEffect(() => {
     localStorage.setItem("svino-sound", soundEnabled ? "on" : "off");
   }, [soundEnabled]);
@@ -1137,6 +1151,7 @@ export default function App() {
   }, [upgradePhase, upgradeResult?.upgradeId, upgradeMode]);
   const selectCase = (item: Case) => {
     if (!casesReady) return toast("Кейсы загружаются, одну секунду 🐷");
+    localStorage.setItem("svino-open-case", item.id);
     setSelectedCase(item);
     setCount(item.maxOpen === 1 ? 1 : [1, 2, 3, 4, 5, 10].includes(count) ? count : 1);
     setOpening(null);
@@ -2098,6 +2113,7 @@ export default function App() {
           onFinished={finishCaseAnimation}
           onClose={() => {
             if (casePhase !== "spinning") {
+              localStorage.removeItem("svino-open-case");
               setSelectedCase(null);
               setCasePhase("idle");
               setOpening(null);
@@ -2632,7 +2648,6 @@ function PigstyPage({
       toast(error instanceof Error ? error.message : "Не удалось забрать выигрыш");
     } finally { setBusy(false); }
   };
-  const terminal = Boolean(game && game.status !== "PLAYING");
   return (
     <section className="page compact-page pigsty-page">
       <header className="pigsty-hero">
@@ -2640,56 +2655,31 @@ function PigstyPage({
         <button className="pigsty-rules-button" onClick={() => setRulesOpen((value) => !value)}>Как играть? {rulesOpen ? "⌃" : "⌄"}</button>
       </header>
       {rulesOpen && <div className="pigsty-rules"><b>Выбери предмет и 1–3 бомбы.</b><span>На каждом ходу открой одно окно из четырёх. Курица повышает множитель, бомба забирает предмет. Выигрыш можно забрать после любой пойманной курицы.</span></div>}
-      <div className="pigsty-layout">
-        <section className={`pigsty-stage pigsty-fullwidth ${playing ? "playing" : ""} ${game ? game.status.toLowerCase() : "setup"}`}>
-          <img className={`pigsty-pig ${!game ? "pigsty-pig-idle" : ""}`} src={pigstyPigImage} alt="Свинка-охотник" />
-          {!game && (
-            <div className="pigsty-setup-panel">
+      <div className="pigsty-layout pigsty-split">
+        <aside className={`pigsty-controls pigsty-left-panel ${game ? "in-round" : "setup"}`}>
+          {!game ? (
+            <div className="pigsty-panel-content pigsty-bet-panel">
               <p className="eyebrow">ТВОЯ СТАВКА</p>
               <h2>Собери ставку</h2>
-              <div className="pigsty-bombs"><b>Количество бомб</b><div>{([1, 2, 3] as const).map((count) => <button className={bombCount === count ? "chosen" : ""} key={count} onClick={() => setBombCount(count)}><span className="pigsty-bomb-dots">{Array.from({ length: count }, (_, i) => <i key={i}/>)}</span><small>{count} {count === 1 ? "бомба" : "бомбы"}</small></button>)}</div></div>
-              <div className="pigsty-stake-tabs">
-                <button className={stakeMode === "item" ? "chosen" : ""} onClick={() => setStakeMode("item")}>🗡 Инвентарь</button>
-                <button className={stakeMode === "balance" ? "chosen" : ""} onClick={() => setStakeMode("balance")}>💳 Баланс</button>
-              </div>
-              {stakeMode === "item" ? (
-                <div className="pigsty-inventory">{inventory.length ? <div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div>
-              ) : (
-                <div className="pigsty-amount">
-                  <div className="pigsty-amount-stepper">
-                    <button type="button" onClick={() => setAmount((value) => clampAmount(value - 100))}>−</button>
-                    <span>🪙 {amount.toLocaleString("ru-RU")} SC</span>
-                    <button type="button" onClick={() => setAmount((value) => clampAmount(value + 100))}>+</button>
-                  </div>
-                  <div className="pigsty-amount-presets">
-                    <button type="button" onClick={() => setAmount((value) => clampAmount(value / 2))}>1/2</button>
-                    <button type="button" onClick={() => setAmount((value) => clampAmount(value * 2))}>×2</button>
-                    <button type="button" onClick={() => setAmount((value) => clampAmount(value * 3))}>×3</button>
-                    <button type="button" onClick={() => setAmount(clampAmount((user?.balance || 0) / 100))}>Всё</button>
-                  </div>
-                </div>
-              )}
+              <div className="pigsty-bombs"><b>Количество бомб</b><div>{([1, 2, 3] as const).map((count) => <button className={bombCount === count ? "chosen" : ""} key={count} onClick={() => setBombCount(count)}><span className="pigsty-bomb-dots">{Array.from({ length: count }, (_, i) => <i key={i} />)}</span><small>{count} {count === 1 ? "бомба" : "бомбы"}</small></button>)}</div></div>
+              <div className="pigsty-stake-tabs"><button className={stakeMode === "item" ? "chosen" : ""} onClick={() => setStakeMode("item")}>🗡 Инвентарь</button><button className={stakeMode === "balance" ? "chosen" : ""} onClick={() => setStakeMode("balance")}>💳 Баланс</button></div>
+              {stakeMode === "item" ? <div className="pigsty-inventory">{inventory.length ? <div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div> : <div className="pigsty-amount"><div className="pigsty-amount-stepper"><button type="button" onClick={() => setAmount((value) => clampAmount(value - 100))}>−</button><span>🪙 {amount.toLocaleString("ru-RU")} SC</span><button type="button" onClick={() => setAmount((value) => clampAmount(value + 100))}>+</button></div><div className="pigsty-amount-presets"><button type="button" onClick={() => setAmount((value) => clampAmount(value / 2))}>1/2</button><button type="button" onClick={() => setAmount((value) => clampAmount(value * 2))}>×2</button><button type="button" onClick={() => setAmount((value) => clampAmount(value * 3))}>×3</button><button type="button" onClick={() => setAmount(clampAmount((user?.balance || 0) / 100))}>Всё</button></div></div>}
               <button className="pig-button pigsty-action" disabled={busy || (stakeMode === "item" ? !selectedItem : amount < 500)} onClick={start}>НАЧАТЬ ИГРУ →</button>
             </div>
-          )}
-          {game && (<>
-            <div className="pigsty-stage-bar">
+          ) : (
+            <div className="pigsty-panel-content pigsty-round-panel" aria-busy={busy}>
+              <p className="eyebrow">СВИНАРНИК · ХОД {playing ? game.round : game.choices.length}</p>
               <div className="pigsty-stake-chip">{game.stakeItem.id === "BALANCE" ? <span className="pigsty-coin-icon">🐷</span> : <img src={game.stakeItem.image} alt=""/>}<span><small>СТАВКА</small><b>{game.stakeItem.id === "BALANCE" ? "Свинокоины" : game.stakeItem.name}</b></span><em>{coins(game.stakeItem.price)} SC</em></div>
-              {playing && <div className={`pigsty-prize ${flash ? "pulse" : ""}`}><span>МОЖЕШЬ ЗАБРАТЬ ПРЯМО СЕЙЧАС</span><b>{coins(game.payout)} SC</b><small>{multiplier(game.multiplier)} · поймано {game.choices.length} {game.choices.length === 1 ? "курица" : "курицы"}</small></div>}
-              {terminal && <div className={`pigsty-result-chip ${game.status.toLowerCase()}`}><b>{game.status === "LOST" ? "Свинка попалась на бомбу" : "Свинка унесла приз"}</b>{game.status === "CASHED_OUT" && <strong>{coins(game.payout)} SC</strong>}</div>}
-              <button className={`pig-button pigsty-action-inline ${playing ? "cashout" : ""}`} disabled={busy} onClick={playing ? cashout : () => setGame(null)}>{playing ? `ЗАБРАТЬ ${coins(game.payout)} SC →` : "НОВЫЙ РАУНД →"}</button>
+              {playing ? <><div className="pigsty-prize"><span>МОЖЕШЬ ЗАБРАТЬ</span><b>{coins(game.payout)} SC</b><small>{multiplier(game.multiplier)} · поймано {game.choices.length}</small></div><div className="pigsty-choice-grid">{Array.from({ length: 4 }, (_, choice) => { const bomb = game.status === "LOST" && game.revealedBombs?.includes(choice); const caught = flash?.choice === choice; return <button key={choice} className={`pigsty-choice ${bomb ? "bomb" : caught ? "caught" : "hidden"}`} disabled={busy} onClick={() => choose(choice)}><i>{bomb ? "💣" : caught ? "🐔" : "?"}</i><b>{caught ? "ПОЙМАНА!" : `ОКНО ${choice + 1}`}</b><small>{caught ? `+${multiplier(game.multiplier)}` : "ОТКРЫТЬ"}</small></button>; })}</div><p className="pigsty-round-hint">Выбери одно окно: внутри курица или бомба.</p><button className="pig-button pigsty-action cashout" disabled={busy || !game.choices.length} onClick={cashout}>{game.choices.length ? `ЗАБРАТЬ ${coins(game.payout)} SC →` : "СНАЧАЛА ПОЙМАЙ КУРИЦУ"}</button></> : <><div className={`pigsty-result ${game.status === "LOST" ? "lost" : ""}`}><b>{game.status === "LOST" ? "Свинка попалась на бомбу" : "Свинка унесла приз"}</b><strong>{game.status === "LOST" ? "💥 Раунд завершён" : `${coins(game.payout)} SC`}</strong></div>{game.status === "LOST" && <div className="pigsty-choice-grid reveal">{Array.from({ length: 4 }, (_, choice) => { const bomb = game.revealedBombs?.includes(choice); const picked = lastChoice?.choice === choice; return <div key={choice} className={`pigsty-choice ${bomb ? "bomb" : "safe"} ${picked ? "picked" : ""}`}><i>{bomb ? "💣" : "🐔"}</i><b>{picked ? "ТВОЙ ВЫБОР" : bomb ? "БОМБА" : "БЕЗОПАСНО"}</b><small>{bomb ? "вот где она была" : "курица"}</small></div>; })}</div>}<button className="pig-button pigsty-action" onClick={() => { setGame(null); setFlash(null); }}>НОВЫЙ РАУНД →</button></>}
             </div>
-            <div className="pigsty-stage-top"><span>🐷 СВИНАРНИК · ХОД {playing ? game.round : game.choices.length || 0}</span><b>{playing ? "ВЫБЕРИ ОДНО ОКНО" : "РАУНД ЗАВЕРШЁН"}</b></div>
-            {playing && <div className="pigsty-notice">Лови курицу, но не разбуди бомбу.</div>}
-            <div className="pigsty-windows">{Array.from({ length: 4 }, (_, choice) => {
-              const bomb = game.status === "LOST" && game.revealedBombs?.includes(choice);
-              const picked = game.status === "LOST" && lastChoice?.choice === choice;
-              const caught = flash?.choice === choice;
-              const state = bomb ? "bomb" : picked ? "picked" : caught ? "caught" : "";
-              return <button key={choice} disabled={!playing || busy} className={`pigsty-window ${state}`} onClick={() => choose(choice)}><i>{bomb ? "💣" : picked ? "💥" : caught ? "🐔" : "?"}</i><b>{bomb ? "БОМБА" : picked ? "ЛОВУШКА" : caught ? "ПОЙМАНА!" : `ОКНО ${choice + 1}`}</b><small>{caught ? `+${multiplier(game.multiplier)}` : playing ? "Нажми, чтобы проверить" : bomb ? "вот где она была" : ""}</small></button>;
-            })}</div>
-            <div className="pigsty-stage-footer"><span>Бомб: <b>{game.bombCount}</b></span><span>Следующая курица: <b>{playing ? multiplier(game.multiplier * ({ 1: 1.24, 2: 1.78, 3: 3.18 }[game.bombCount])) : "?"}</b></span></div>
-          </>)}
+          )}
+        </aside>
+        <section className={`pigsty-stage ${playing ? "playing" : ""} ${game ? game.status.toLowerCase() : "setup"}`}>
+          <div className="pigsty-stage-top"><span>🐷 СВИНАРНИК</span><b>{playing ? "СВИНКА НА ОХОТЕ" : "ЧЕТЫРЕ ОКНА"}</b></div>
+          <div className="pigsty-notice">{playing ? "Лови курицу, но не разбуди бомбу." : "Выбери ставку слева и начни раунд."}</div>
+          <img className={`pigsty-pig ${flash ? "caught" : ""} ${game?.status === "LOST" ? "lost" : ""}`} src={pigstyPigImage} alt="Свинка-охотник" />
+          {flash && <span className="pigsty-flying-chicken">🐔</span>}
+          {game && <div className="pigsty-stage-footer"><span>Бомб: <b>{game.bombCount}</b></span><span>Следующая курица: <b>{playing ? multiplier(game.multiplier * ({ 1: 1.24, 2: 1.78, 3: 3.18 }[game.bombCount])) : "?"}</b></span></div>}
         </section>
       </div>
     </section>
@@ -6429,6 +6419,11 @@ function CaseModal({
                   : "ГОТОВ К ОТКРЫТИЮ"}
               <em>SERVER VERIFIED</em>
             </div>
+            {phase === "spinning" && opening && (
+              <button className="case-skip-animation" onClick={onFinished}>
+                Пропустить анимацию <span>→</span>
+              </button>
+            )}
             {risk ? (
               <RiskReveal
                 pool={pool}
