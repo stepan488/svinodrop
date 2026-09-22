@@ -6502,16 +6502,10 @@ function CaseModal({
           </>
         )}
         {phase === "result" && opening && (
-          <div className={`case-result ${caseDropsSold ? "drops-sold" : ""}`}>
+          <div className={`case-result ${caseDropsSold ? "drops-sold" : ""} ${bulk ? "bulk-result" : ""}`}>
             <span>{caseDropsSold ? "🪙" : "🐷"}</span>
-            <div>
-              <small>
-                {caseDropsSold
-                  ? "ДРОП ПРОДАН"
-                  : opening.length > 1
-                    ? `ТВОИ ${opening.length} НОВЫХ ДРОПОВ`
-                    : "ТВОЙ НОВЫЙ ДРОП"}
-              </small>
+            <div className={bulk ? "case-batch-summary" : ""}>
+              {!bulk && <small>{caseDropsSold ? "ДРОП ПРОДАН" : opening.length > 1 ? `ТВОИ ${opening.length} НОВЫХ ДРОПОВ` : "ТВОЙ НОВЫЙ ДРОП"}</small>}
               {bulk ? (
                 <div className="case-batch-rewards">
                   {opening.map((drop, index) => (
@@ -6523,12 +6517,7 @@ function CaseModal({
                     </article>
                   ))}
                 </div>
-              ) : <b>{opening.map((drop) => drop.item.name).join(" · ")}</b>}
-              <em>
-                {caseDropsSold
-                  ? "Окно кейса остаётся открытым — можешь сразу открыть ещё."
-                  : "Оставь в инвентаре или продай сразу за полную цену."}
-              </em>
+              ) : <><b>{opening.map((drop) => drop.item.name).join(" · ")}</b><em>{caseDropsSold ? "Окно кейса остаётся открытым — можешь сразу открыть ещё." : "Оставь в инвентаре или продай сразу за полную цену."}</em></>}
             </div>
             <div className="case-result-actions">
               {caseDropsSold ? (
