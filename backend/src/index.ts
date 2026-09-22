@@ -1066,6 +1066,8 @@ app.post('/api/pigsty/open', auth, async (req: AuthedRequest, res) => {
       const safe = !entry.response.activeBombs.includes(choice);
       const next: PigstyRecord = {
         ...entry.response, choices: [...entry.response.choices, { choice, safe }], status: safe ? 'PLAYING' : 'LOST',
+        // Every successful step starts a freshly shuffled board. The client
+        // never receives these positions before a losing reveal.
         activeBombs: safe ? pigstyBombs(entry.response.bombCount) : entry.response.activeBombs,
         completedAt: safe ? undefined : new Date().toISOString(),
       };

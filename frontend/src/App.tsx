@@ -6346,6 +6346,8 @@ function CaseModal({
   const magic = data.openingStyle === "MAGIC";
   const risk = !magic && mode === "RISK";
   const multi = (opening?.length || count) > 1;
+  const bulk = !magic && (opening?.length || count) >= 5;
+  const batchCount = opening?.length || count;
   const reels = opening?.map((drop) => drop.item) || [undefined];
   const contents = [...data.items].sort(
     (left, right) => left.item.price - right.item.price,
@@ -6359,7 +6361,7 @@ function CaseModal({
   return (
     <div className="modal-backdrop">
       <section
-        className={`case-modal cinematic-case ${magic ? `magic-case magic-${data.slug}` : ""} ${phase} ${multi ? "multi-opening" : ""} mode-${mode.toLowerCase()}`}
+        className={`case-modal cinematic-case ${magic ? `magic-case magic-${data.slug}` : ""} ${phase} ${multi ? "multi-opening" : ""} ${bulk ? "bulk-opening" : ""} mode-${mode.toLowerCase()}`}
         style={
           {
             "--reel-duration": `${spinDuration[mode]}ms`,
@@ -6432,7 +6434,15 @@ function CaseModal({
                 onFinished={onFinished}
               />
             ) : (
-              <div className={`case-reels ${multi ? "multiple" : ""}`}>
+              <>
+                {bulk && (
+                  <div className={`case-batch-head ${phase}`}>
+                    <span>×{batchCount}</span>
+                    <div><b>СВИНСКИЙ МУЛЬТИДРОП</b><small>{phase === "spinning" ? "Десять лент, один большой момент…" : phase === "result" ? "Вся серия уже в твоём инвентаре" : "Открой серию одним нажатием"}</small></div>
+                    <em>{phase === "spinning" ? "КРУТИМ" : phase === "result" ? "ГОТОВО" : "ГОТОВ"}</em>
+                  </div>
+                )}
+                <div className={`case-reels ${multi ? "multiple" : ""} ${bulk ? "bulk" : ""}`}>
                 {reels.map((winner, index) => (
                   <CaseReel
                     key={`${winner?.id || "empty"}-${index}`}
@@ -6443,7 +6453,8 @@ function CaseModal({
                     onFinished={index === 0 ? onFinished : undefined}
                   />
                 ))}
-              </div>
+                </div>
+              </>
             )}
             {phase === "idle" && (
               <section className="case-contents">
@@ -6501,7 +6512,18 @@ function CaseModal({
                     ? `ТВОИ ${opening.length} НОВЫХ ДРОПОВ`
                     : "ТВОЙ НОВЫЙ ДРОП"}
               </small>
-              <b>{opening.map((drop) => drop.item.name).join(" · ")}</b>
+              {bulk ? (
+                <div className="case-batch-rewards">
+                  {opening.map((drop, index) => (
+                    <article className={rarity(drop.item.rarity)} key={drop.dropId}>
+                      <span>#{index + 1}</span>
+                      <img src={drop.item.image} alt="" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = "/skin-fallback.svg"; }} />
+                      <b>{drop.item.name}</b>
+                      <em>{coins(drop.item.price)} SC</em>
+                    </article>
+                  ))}
+                </div>
+              ) : <b>{opening.map((drop) => drop.item.name).join(" · ")}</b>}
               <em>
                 {caseDropsSold
                   ? "Окно кейса остаётся открытым — можешь сразу открыть ещё."
