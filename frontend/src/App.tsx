@@ -266,7 +266,7 @@ const coins = (value: number) =>
 const multiplier = (value: number) =>
   `×${new Intl.NumberFormat("ru-RU", { minimumFractionDigits: value < 10 ? 2 : 0, maximumFractionDigits: 2 }).format(value)}`;
 const spinDuration: Record<SpinMode, number> = {
-  FAST: 2000,
+  FAST: 1000,
   SLOW: 6800,
   RISK: 9400,
 };
@@ -597,7 +597,11 @@ export default function App() {
     | "chat"
     | "leaderboard"
     | "admin"
-  >("cases");
+  >(() => {
+    const saved = localStorage.getItem("svino-page");
+    const allowed = ["cases", "games", "upgrade", "battles", "naval", "mines", "pigsty", "road", "contract", "crash", "boss", "giveaways", "inventory", "profile", "chat", "leaderboard", "admin"];
+    return (allowed.includes(saved || "") ? saved : "cases") as "cases";
+  });
   const [cases, setCases] = useState<Case[]>(fallbackCases);
   const [casesReady, setCasesReady] = useState(false);
   const [skins, setSkins] = useState<Skin[]>([]);
@@ -770,6 +774,9 @@ export default function App() {
     refreshPrivate();
   }, [token]);
   useEffect(() => {
+    localStorage.setItem("svino-page", page);
+  }, [page]);
+  useEffect(() => {
     localStorage.setItem("svino-sound", soundEnabled ? "on" : "off");
   }, [soundEnabled]);
   useEffect(() => {
@@ -816,7 +823,7 @@ export default function App() {
     () =>
       sources.length && target && target.price > upgradeStake
         ? Math.max(
-            2,
+            5,
             Math.min(90, Math.round((upgradeStake / target.price) * 90)),
           )
         : 0,
@@ -1131,7 +1138,7 @@ export default function App() {
   const selectCase = (item: Case) => {
     if (!casesReady) return toast("Кейсы загружаются, одну секунду 🐷");
     setSelectedCase(item);
-    setCount(item.maxOpen === 1 ? 1 : Math.min(4, item.maxOpen || 4, count));
+    setCount(item.maxOpen === 1 ? 1 : [1, 2, 3, 4, 5, 10].includes(count) ? count : 1);
     setOpening(null);
     setCaseBalanceReward(0);
     setCaseDropsSold(false);
@@ -1699,7 +1706,7 @@ export default function App() {
                 <span>Общая ставка: {coins(upgradeStake)} SC</span>
               </div>
               <div className="quick-row">
-                {[2, 3, 5, 10, 25].map((x) => (
+                {[2, 3, 5, 10].map((x) => (
                   <button
                     key={x}
                     disabled={upgradePhase === "spinning" || !sources.length}
@@ -1709,7 +1716,7 @@ export default function App() {
                           skins.find(
                             (skin) =>
                               skin.price > upgradeStake &&
-                              skin.price >= upgradeStake * x,
+                              skin.price >= upgradeStake * x && skin.price <= upgradeStake * 18,
                           ) || null,
                         );
                         setUpgradePhase("idle");
@@ -1731,7 +1738,9 @@ export default function App() {
               {skins
                 .filter(
                   (skin) =>
-                    skin.upgradeEligible !== false && skin.price > upgradeStake,
+                    skin.upgradeEligible !== false &&
+                    skin.price > upgradeStake &&
+                    skin.price <= upgradeStake * 18,
                 )
                 .map((skin) => (
                   <SkinCard
@@ -2418,23 +2427,6 @@ function ProfileCustomizer({
       );
     }
   };
-  const remove = async () => {
-    if (
-      window.prompt(
-        `Напиши ${user.username}, чтобы удалить аккаунт вместе со всеми предметами и историей:`,
-      ) !== user.username
-    )
-      return;
-    try {
-      await request("/api/profile", token, { method: "DELETE" });
-      localStorage.removeItem("svino-token");
-      window.location.reload();
-    } catch (error) {
-      toast(
-        error instanceof Error ? error.message : "Не удалось удалить аккаунт",
-      );
-    }
-  };
   return (
     <section className="page compact-page profile-customizer">
       <div className="panel">
@@ -2462,9 +2454,6 @@ function ProfileCustomizer({
         </label>
         <button className="pig-button" onClick={save}>
           Сохранить стиль →
-        </button>
-        <button className="admin-danger" onClick={remove}>
-          Удалить аккаунт
         </button>
       </div>
     </section>
@@ -4728,10 +4717,12 @@ function BattleWaitingRoom({
   battle,
   busy,
   onAddBot,
+  onLeave,
 }: {
   battle: Battle;
   busy: boolean;
   onAddBot: () => void;
+  onLeave?: () => void;
 }) {
   const slots = Array.from(
     { length: battle.playerLimit },
@@ -4788,6 +4779,11 @@ function BattleWaitingRoom({
           <em>
             Код: <strong>{battle.inviteCode}</strong>
           </em>
+        )}
+        {onLeave && (
+          <button className="login battle-leave" disabled={busy} onClick={onLeave}>
+            Выйти · вернуть ставку
+          </button>
         )}
       </div>
     </div>
@@ -4861,20 +4857,24 @@ function BattlePage({
       setBusy(false);
     }
   };
-  const action = async (id: string, actionName: "join" | "bot") => {
+  const action = async (id: string, actionName: "join" | "bot" | "leave") => {
     if (!user) return onRequireAuth();
+    setBusy(true);
     try {
-      const updated = (await request(
+      const updated = await request(
         `/api/battles/${id}/${actionName}`,
         token,
         { method: "POST" },
-      )) as Battle;
-      if (actionName === "bot" || watching?.id === id) setWatching(updated);
+      );
+      if (actionName === "leave") {
+        if (watching?.id === id) setWatching(null);
+        toast("Ты вышел из баттла — ставка уже возвращена.");
+      } else if (actionName === "bot" || watching?.id === id) setWatching(updated as Battle);
       await onBalance();
       load();
     } catch (error) {
       toast(error instanceof Error ? error.message : "Действие не выполнено");
-    }
+    } finally { setBusy(false); }
   };
   const selectedCost = picked.reduce(
     (sum, id) => sum + (cases.find((item) => item.id === id)?.price || 0),
@@ -5073,6 +5073,15 @@ function BattlePage({
                           + Свинобот
                         </button>
                       )}
+                    {battle.isMine && battle.creatorId !== user?.id && (
+                      <button
+                        className="login battle-leave"
+                        disabled={busy}
+                        onClick={() => action(battle.id, "leave")}
+                      >
+                        Выйти · вернуть ставку
+                      </button>
+                    )}
                     {battle.isMine && battle.private && (
                       <small>
                         Код: <b>{battle.inviteCode}</b>
@@ -5120,6 +5129,7 @@ function BattlePage({
                 battle={watching}
                 busy={busy}
                 onAddBot={() => action(watching.id, "bot")}
+                onLeave={watching.isMine && watching.creatorId !== user?.id ? () => action(watching.id, "leave") : undefined}
               />
             )}
           </section>
@@ -5970,9 +5980,9 @@ function UpgradeDial({
   result: { success: boolean; landingAngle: number } | null;
   mode: SpinMode;
 }) {
-  const safeChance = Math.max(2, chance || 2);
+  const safeChance = Math.max(5, chance || 5);
   // The pink landing arc follows the protected chance and remains readable
-  // even at the minimum 2% chance.
+  // even at the protected 5% minimum.
   const successArc = Math.max(8, Math.min(324, safeChance * 3.6));
   const pointOnSuccessArc = (angle: number) => {
     const radians = (angle * Math.PI) / 180;
@@ -6536,7 +6546,7 @@ function CaseModal({
                 <>
                   <small>ОТКРЫТЬ СЕРИЕЙ</small>
                   <div className="count-picker">
-                    {[1, 2, 3, 4].map((value) => (
+                    {[1, 2, 3, 4, 5, 10].map((value) => (
                       <button
                         key={value}
                         disabled={phase === "spinning"}

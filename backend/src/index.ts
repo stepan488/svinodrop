@@ -292,7 +292,7 @@ function kyivDayStart(date = new Date()) {
 }
 
 const bossEvent = {
-  key: 'falych-2026-09',
+  key: 'falych-2026-09-reset-22',
   title: 'Битва с Фалычем',
   startsAt: new Date('2026-09-19T00:00:00+03:00'),
   endsAt: new Date('2026-10-19T23:59:59.999+03:00'),
@@ -734,12 +734,6 @@ app.patch('/api/profile/customize', auth, async (req: AuthedRequest, res) => {
   const user = await prisma.user.update({ where: { id: req.session!.id }, data: { avatar, nickColor: nickColor.toLowerCase() } });
   res.json({ user: publicUser(user) });
 });
-app.delete('/api/profile', auth, async (req: AuthedRequest, res) => {
-  try {
-    await prisma.user.delete({ where: { id: req.session!.id } });
-    res.json({ ok: true });
-  } catch { res.status(400).json({ error: 'Не удалось удалить аккаунт: заверши активные игры и попробуй снова.' }); }
-});
 app.get('/api/users/:id', async (req, res) => {
   const user = await prisma.user.findFirst({
     where: { id: req.params.id, isBanned: false },
@@ -810,7 +804,7 @@ app.post('/api/daily-streak/claim', auth, async (req: AuthedRequest, res) => {
 
 app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
   const count = Number(req.body?.count); const requestKey = req.headers['idempotency-key'];
-  if (!Number.isInteger(count) || count < 1 || count > 4 || typeof requestKey !== 'string' || requestKey.length < 12) return res.status(400).json({ error: 'Некорректный запрос открытия.' });
+  if (!Number.isInteger(count) || count < 1 || count > 10 || typeof requestKey !== 'string' || requestKey.length < 12) return res.status(400).json({ error: 'Некорректный запрос открытия.' });
   try {
     await assertModeOpen('cases');
     const result = await prisma.$transaction(async (tx) => {
@@ -818,7 +812,7 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
       if (replay) return replay.response as unknown as { balance: number; caseName: string; drops: Array<{ dropId: string; inventoryId: string; item: typeof itemSelect }> };
       const caseData = await tx.case.findFirst({ where: { id: req.params.caseId, active: true }, include: { items: { include: { item: { select: itemSelect } } } } });
       if (!caseData) throw new Error('Кейс недоступен');
-      if (count > caseData.maxOpen) throw new Error(caseData.maxOpen === 1 ? 'Этот магический кейс можно открыть только по одному.' : `За раз можно открыть до ${caseData.maxOpen} кейсов.`);
+      if (caseData.openingStyle === 'MAGIC' && count !== 1) throw new Error('Магический кейс можно открыть только по одному.');
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
       if (user.isBanned) throw new Error('Аккаунт заблокирован');
       const total = caseData.price * count;
@@ -876,7 +870,9 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
       const itemsStake = sources.reduce((total, source) => total + source.item.price, 0);
       const totalStake = itemsStake + balanceStake;
       if (target.price <= totalStake) throw new Error('Цель должна быть дороже общей ставки.');
-      const chance = Math.max(2, Math.min(90, Math.round((totalStake / target.price) * 90)));
+      const rawChance = Math.round((totalStake / target.price) * 90);
+      if (rawChance < 5) throw new Error('Минимальный шанс апгрейда — 5%. Увеличь ставку или выбери более доступную цель.');
+      const chance = Math.min(90, rawChance);
       const success = crypto.randomInt(100) < chance;
       const landingAngle = upgradeLandingAngle(chance, success);
       await tx.inventory.updateMany({ where: { id: { in: sourceInventoryIds }, userId: req.session!.id, removedAt: null }, data: { removedAt: new Date() } });
@@ -1458,8 +1454,11 @@ async function settleBattle(id: string) {
   return settled;
 }
 app.get('/api/battles', auth, async (req: AuthedRequest, res) => {
-  const battles = await prisma.battle.findMany({ where: { OR: [{ private: false }, { creatorId: req.session!.id }, { players: { some: { userId: req.session!.id } } }] }, orderBy: { createdAt: 'desc' }, take: 30, select: { id: true } });
-  res.json((await Promise.all(battles.map((battle) => battleView(battle.id, req.session!.id)))).filter(Boolean));
+  await prisma.battle.deleteMany({ where: { status: 'FINISHED', settledAt: { lt: new Date(Date.now() - 30_000) } } });
+  const battles = await prisma.battle.findMany({ where: { OR: [{ private: false }, { creatorId: req.session!.id }, { players: { some: { userId: req.session!.id } } }] }, orderBy: { createdAt: 'desc' }, take: 100, select: { id: true } });
+  const views = (await Promise.all(battles.map((battle) => battleView(battle.id, req.session!.id)))).filter(Boolean);
+  views.sort((left, right) => Number(right!.status === 'WAITING') - Number(left!.status === 'WAITING') || new Date(right!.createdAt).getTime() - new Date(left!.createdAt).getTime());
+  res.json(views.slice(0, 30));
 });
 app.get('/api/battles/:id', auth, async (req: AuthedRequest, res) => { const battle = await battleView(req.params.id, req.session!.id); if (!battle || (battle.private && !battle.isMine && battle.creatorId !== req.session!.id)) return res.status(404).json({ error: 'Баттл не найден.' }); res.json(battle); });
 app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
@@ -1500,6 +1499,24 @@ app.post('/api/battles/:id/join', auth, async (req: AuthedRequest, res) => {
     }, { isolationLevel: 'Serializable' });
     if (joined) await settleBattle(req.params.id); io.emit('battle:updated', { id: req.params.id }); res.json(await battleView(req.params.id, req.session!.id));
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось войти в баттл.' }); }
+});
+app.post('/api/battles/:id/leave', auth, async (req: AuthedRequest, res) => {
+  try {
+    await prisma.$transaction(async (tx) => {
+      const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } });
+      if (!battle || battle.status !== 'WAITING') throw new Error('Выйти можно только до старта баттла.');
+      if (battle.creatorId === req.session!.id) throw new Error('Создатель не может выйти из своей комнаты. Добавь ботов или дождись игроков.');
+      const player = battle.players.find((entry) => entry.userId === req.session!.id);
+      if (!player) throw new Error('Ты не участвуешь в этом баттле.');
+      const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] } }, select: { id: true, price: true } });
+      const refund = (battle.caseIds as string[]).reduce((sum, caseId) => sum + (cases.find((item) => item.id === caseId)?.price || 0), 0);
+      await tx.battlePlayer.delete({ where: { id: player.id } });
+      await tx.user.update({ where: { id: req.session!.id }, data: { balance: { increment: refund } } });
+      await tx.transaction.create({ data: { userId: req.session!.id, type: 'BATTLE_REFUND', amount: refund, description: 'Выход из незапущенного кейс-баттла · ставка возвращена' } });
+    }, { isolationLevel: 'Serializable' });
+    io.emit('battle:updated', { id: req.params.id });
+    res.json({ ok: true });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось выйти из баттла.' }); }
 });
 app.post('/api/battles/:id/bot', auth, async (req: AuthedRequest, res) => {
   try { await assertModeOpen('battles'); await prisma.$transaction(async (tx) => { const battle = await tx.battle.findUnique({ where: { id: req.params.id }, include: { players: true } }); if (!battle || battle.creatorId !== req.session!.id || battle.status !== 'WAITING') throw new Error('Добавить бота нельзя.'); if (battle.players.length >= battle.playerLimit) throw new Error('Нет свободного места.'); await tx.battlePlayer.create({ data: { battleId: battle.id, botName: `Свинобот #${crypto.randomInt(100, 999)}` } }); }); await settleBattle(req.params.id); res.json(await battleView(req.params.id, req.session!.id)); } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось добавить бота.' }); }
