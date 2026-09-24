@@ -31,6 +31,18 @@ type Inventory = {
   obtainedFrom: string;
   item: Skin;
 };
+type SkinSort = "PRICE_ASC" | "PRICE_DESC";
+
+function sortByPrice<T>(
+  entries: T[],
+  getPrice: (entry: T) => number,
+  order: SkinSort,
+) {
+  return [...entries].sort((left, right) => {
+    const difference = getPrice(left) - getPrice(right);
+    return order === "PRICE_ASC" ? difference : -difference;
+  });
+}
 type User = {
   id: string;
   username: string;
@@ -610,6 +622,9 @@ export default function App() {
     () => localStorage.getItem("svino-token") || "",
   );
   const [inventory, setInventory] = useState<Inventory[]>([]);
+  const [skinSort, setSkinSort] = useState<SkinSort>(
+    () => (localStorage.getItem("svino-skin-sort") as SkinSort) || "PRICE_DESC",
+  );
   const [sellingIds, setSellingIds] = useState<Set<string>>(() => new Set());
   const [sellingAll, setSellingAll] = useState(false);
   const [feed, setFeed] = useState<Feed[]>([]);
@@ -693,6 +708,14 @@ export default function App() {
     () => localStorage.getItem("svino-sound") !== "off",
   );
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const sortedInventory = useMemo(
+    () => sortByPrice(inventory, (entry) => entry.item.price, skinSort),
+    [inventory, skinSort],
+  );
+  const sortedSkins = useMemo(
+    () => sortByPrice(skins, (skin) => skin.price, skinSort),
+    [skins, skinSort],
+  );
 
   const toast = (text: string) => {
     setNotice(text);
@@ -776,6 +799,9 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("svino-page", page);
   }, [page]);
+  useEffect(() => {
+    localStorage.setItem("svino-skin-sort", skinSort);
+  }, [skinSort]);
   // A case is a place in the app just like a game page.  Keep its id (never
   // the unrevealed result) so a refresh returns the player to the same case.
   useEffect(() => {
@@ -1560,6 +1586,7 @@ export default function App() {
                   : "Твоя ставка"
               }
               selectionLimit={8}
+              sortControl={<SkinSortToggle value={skinSort} onChange={setSkinSort} compact />}
               onClear={
                 sources.length
                   ? () => {
@@ -1573,7 +1600,7 @@ export default function App() {
                 !inventory.length ? "Открой кейс, чтобы начать." : undefined
               }
             >
-              {inventory.map((entry) => (
+              {sortedInventory.map((entry) => (
                 <SkinCard
                   key={entry.id}
                   skin={entry.item}
@@ -1752,8 +1779,9 @@ export default function App() {
               subtitle="Предмет, который получишь при успехе"
               selectedSkins={target ? [target] : []}
               selectedCaption="Твоя цель"
+              sortControl={<SkinSortToggle value={skinSort} onChange={setSkinSort} compact />}
             >
-              {skins
+              {sortedSkins
                 .filter(
                   (skin) =>
                     skin.upgradeEligible !== false &&
@@ -1802,8 +1830,13 @@ export default function App() {
             )}
           </div>
           {inventory.length ? (
-            <div className="inventory-grid">
-              {inventory.map((entry) => (
+            <>
+              <div className="inventory-toolbar">
+                <span>Сортировка предметов</span>
+                <SkinSortToggle value={skinSort} onChange={setSkinSort} />
+              </div>
+              <div className="inventory-grid">
+              {sortedInventory.map((entry) => (
                 <InventoryCard
                   key={entry.id}
                   entry={entry}
@@ -1811,7 +1844,8 @@ export default function App() {
                   onSell={sell}
                 />
               ))}
-            </div>
+              </div>
+            </>
           ) : (
             <EmptyInventory onClick={() => setPage("cases")} />
           )}
@@ -2047,7 +2081,9 @@ export default function App() {
         <PigstyPage
           token={token}
           user={user}
-          inventory={inventory}
+          inventory={sortedInventory}
+          sortOrder={skinSort}
+          onSortChange={setSkinSort}
           onRequireAuth={() => setAuthOpen(true)}
           onBalance={refreshPrivate}
           toast={toast}
@@ -2066,7 +2102,9 @@ export default function App() {
         <ContractPage
           token={token}
           user={user}
-          inventory={inventory}
+          inventory={sortedInventory}
+          sortOrder={skinSort}
+          onSortChange={setSkinSort}
           onRequireAuth={() => setAuthOpen(true)}
           onBalance={refreshPrivate}
           toast={toast}
@@ -2076,7 +2114,9 @@ export default function App() {
         <CrashPage
           token={token}
           user={user}
-          inventory={inventory}
+          inventory={sortedInventory}
+          sortOrder={skinSort}
+          onSortChange={setSkinSort}
           onRequireAuth={() => setAuthOpen(true)}
           onBalance={refreshPrivate}
           toast={toast}
@@ -2181,6 +2221,37 @@ export default function App() {
   );
 }
 
+function SkinSortToggle({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: SkinSort;
+  onChange: (value: SkinSort) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`skin-sort ${compact ? "compact" : ""}`} aria-label="Сортировка скинов по стоимости">
+      <button
+        type="button"
+        className={value === "PRICE_ASC" ? "chosen" : ""}
+        aria-pressed={value === "PRICE_ASC"}
+        onClick={() => onChange("PRICE_ASC")}
+      >
+        ↑ Дешевле
+      </button>
+      <button
+        type="button"
+        className={value === "PRICE_DESC" ? "chosen" : ""}
+        aria-pressed={value === "PRICE_DESC"}
+        onClick={() => onChange("PRICE_DESC")}
+      >
+        ↓ Дороже
+      </button>
+    </div>
+  );
+}
+
 function SkinCard({
   skin,
   selected,
@@ -2257,6 +2328,7 @@ function UpgradeColumn({
   selectedCaption,
   selectionLimit,
   onClear,
+  sortControl,
 }: {
   title: string;
   subtitle: string;
@@ -2266,6 +2338,7 @@ function UpgradeColumn({
   selectedCaption?: string;
   selectionLimit?: number;
   onClear?: () => void;
+  sortControl?: React.ReactNode;
 }) {
   const total = selectedSkins.reduce((sum, skin) => sum + skin.price, 0);
   return (
@@ -2276,6 +2349,7 @@ function UpgradeColumn({
           <b>{title}</b>
           <small>{subtitle}</small>
         </div>
+        {sortControl}
       </div>
       <div
         className={`upgrade-selected ${selectedSkins.length ? "has-skin" : ""}`}
@@ -2570,6 +2644,8 @@ function PigstyPage({
   token,
   user,
   inventory,
+  sortOrder,
+  onSortChange,
   onRequireAuth,
   onBalance,
   toast,
@@ -2577,6 +2653,8 @@ function PigstyPage({
   token: string;
   user: User | null;
   inventory: Inventory[];
+  sortOrder: SkinSort;
+  onSortChange: (value: SkinSort) => void;
   onRequireAuth: () => void;
   onBalance: () => Promise<void>;
   toast: (text: string) => void;
@@ -2666,7 +2744,7 @@ function PigstyPage({
               <h2>Собери ставку</h2>
               <div className="pigsty-bombs"><b>Количество бомб</b><div>{([1, 2, 3] as const).map((count) => <button className={bombCount === count ? "chosen" : ""} key={count} onClick={() => setBombCount(count)}><span className="pigsty-bomb-dots">{Array.from({ length: count }, (_, i) => <i key={i} />)}</span><small>{count} {count === 1 ? "бомба" : "бомбы"}</small></button>)}</div></div>
               <div className="pigsty-stake-tabs"><button className={stakeMode === "item" ? "chosen" : ""} onClick={() => setStakeMode("item")}>🗡 Инвентарь</button><button className={stakeMode === "balance" ? "chosen" : ""} onClick={() => setStakeMode("balance")}>💳 Баланс</button></div>
-              {stakeMode === "item" ? <div className="pigsty-inventory">{inventory.length ? <div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div> : <div className="pigsty-amount"><div className="pigsty-amount-stepper"><button type="button" onClick={() => setAmount((value) => clampAmount(value - 100))}>−</button><span>🪙 {amount.toLocaleString("ru-RU")} SC</span><button type="button" onClick={() => setAmount((value) => clampAmount(value + 100))}>+</button></div><div className="pigsty-amount-presets"><button type="button" onClick={() => setAmount((value) => clampAmount(value / 2))}>1/2</button><button type="button" onClick={() => setAmount((value) => clampAmount(value * 2))}>×2</button><button type="button" onClick={() => setAmount((value) => clampAmount(value * 3))}>×3</button><button type="button" onClick={() => setAmount(clampAmount((user?.balance || 0) / 100))}>Всё</button></div></div>}
+              {stakeMode === "item" ? <div className="pigsty-inventory">{inventory.length ? <><SkinSortToggle value={sortOrder} onChange={onSortChange} compact /><div>{inventory.slice(0, 8).map((entry) => <button className={inventoryId === entry.id ? "chosen" : ""} onClick={() => setInventoryId(entry.id)} key={entry.id}><img src={entry.item.image} alt=""/><span><small>{entry.item.name}</small><em>{coins(entry.item.price)} SC</em></span></button>)}</div></> : <p>Открой кейс, чтобы получить предмет для ставки.</p>}</div> : <div className="pigsty-amount"><div className="pigsty-amount-stepper"><button type="button" onClick={() => setAmount((value) => clampAmount(value - 100))}>−</button><span>🪙 {amount.toLocaleString("ru-RU")} SC</span><button type="button" onClick={() => setAmount((value) => clampAmount(value + 100))}>+</button></div><div className="pigsty-amount-presets"><button type="button" onClick={() => setAmount((value) => clampAmount(value / 2))}>1/2</button><button type="button" onClick={() => setAmount((value) => clampAmount(value * 2))}>×2</button><button type="button" onClick={() => setAmount((value) => clampAmount(value * 3))}>×3</button><button type="button" onClick={() => setAmount(clampAmount((user?.balance || 0) / 100))}>Всё</button></div></div>}
               <button className="pig-button pigsty-action" disabled={busy || (stakeMode === "item" ? !selectedItem : amount < 500)} onClick={start}>НАЧАТЬ ИГРУ →</button>
             </div>
           ) : (
@@ -3489,6 +3567,8 @@ function ContractPage({
   token,
   user,
   inventory,
+  sortOrder,
+  onSortChange,
   onRequireAuth,
   onBalance,
   toast,
@@ -3496,6 +3576,8 @@ function ContractPage({
   token: string;
   user: User | null;
   inventory: Inventory[];
+  sortOrder: SkinSort;
+  onSortChange: (value: SkinSort) => void;
   onRequireAuth: () => void;
   onBalance: () => Promise<void>;
   toast: (text: string) => void;
@@ -3701,6 +3783,7 @@ function ContractPage({
             <h2>Выбери скины</h2>
             <small>Кликни по предмету. Можно собрать до 10 ячеек.</small>
           </div>
+          <SkinSortToggle value={sortOrder} onChange={onSortChange} compact />
           <div className="contract-items">
             {inventory.length ? (
               inventory.map((entry) => (
@@ -3777,6 +3860,8 @@ function CrashPage({
   token,
   user,
   inventory,
+  sortOrder,
+  onSortChange,
   onRequireAuth,
   onBalance,
   toast,
@@ -3784,6 +3869,8 @@ function CrashPage({
   token: string;
   user: User | null;
   inventory: Inventory[];
+  sortOrder: SkinSort;
+  onSortChange: (value: SkinSort) => void;
   onRequireAuth: () => void;
   onBalance: () => Promise<void>;
   toast: (text: string) => void;
@@ -4090,9 +4177,12 @@ function CrashPage({
             </button>
           </div>
           <div className="crash-skins">
-            <span>
-              Скины в ставке <small>необязательно</small>
-            </span>
+            <div className="crash-skins-head">
+              <span>
+                Скины в ставке <small>необязательно</small>
+              </span>
+              <SkinSortToggle value={sortOrder} onChange={onSortChange} compact />
+            </div>
             <div>
               {inventory.slice(0, 12).map((entry) => (
                 <button
