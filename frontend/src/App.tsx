@@ -621,7 +621,6 @@ export default function App() {
     | "games"
     | "upgrade"
     | "battles"
-    | "naval"
     | "mines"
     | "pigsty"
     | "road"
@@ -636,7 +635,7 @@ export default function App() {
     | "admin"
   >(() => {
     const saved = localStorage.getItem("svino-page");
-    const allowed = ["cases", "games", "upgrade", "battles", "naval", "mines", "pigsty", "road", "contract", "crash", "boss", "giveaways", "inventory", "profile", "chat", "leaderboard", "admin"];
+    const allowed = ["cases", "games", "upgrade", "battles", "mines", "pigsty", "road", "contract", "crash", "boss", "giveaways", "inventory", "profile", "chat", "leaderboard", "admin"];
     return (allowed.includes(saved || "") ? saved : "cases") as "cases";
   });
   const [cases, setCases] = useState<Case[]>(fallbackCases);
@@ -1369,7 +1368,6 @@ export default function App() {
               ["🎁", "Розыгрыши", "Забирай призы", "giveaways"],
               ["🎯", "Апгрейды", "Рискуй скинами", "upgrade"],
               ["📦", "Кейс-баттлы", "Победа забирает банк", "battles"],
-              ["⚓", "Морской бой", "Ставка один на один", "naval"],
               ["💣", "Свиные мины", "Риск и множители", "mines"],
               ["🐔", "Свинарник", "Поймай курицу — не бомбу", "pigsty"],
               ["🐷", "Свиная дорога", "20 шагов до ×48", "road"],
@@ -2084,15 +2082,6 @@ export default function App() {
           toast={toast}
         />
       )}
-      {page === "naval" && (
-        <NavalPage
-          token={token}
-          user={user}
-          onRequireAuth={() => setAuthOpen(true)}
-          onBalance={refreshPrivate}
-          toast={toast}
-        />
-      )}
       {page === "mines" && (
         <MinesPage
           token={token}
@@ -2194,10 +2183,7 @@ export default function App() {
           sellingCaseDrops={sellingCaseDrops}
           caseDropsSold={caseDropsSold}
           onOpenAgain={() => {
-            setCasePhase("idle");
-            setOpening(null);
-            setCaseBalanceReward(0);
-            setCaseDropsSold(false);
+            void openCase();
           }}
         />
       )}
@@ -4389,14 +4375,14 @@ function GamesHub({
 }: {
   onOpen: (
     game:
-      | "upgrade" | "battles" | "naval" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss",
+      | "upgrade" | "battles" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss",
   ) => void;
   dailyWinners: DailyWinner[];
   onOpenProfile: (id: string) => void;
 }) {
   const games: Array<{
     id:
-      | "upgrade" | "battles" | "naval" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss";
+      | "upgrade" | "battles" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss";
     icon: string;
     eyebrow: string;
     title: string;
@@ -4418,14 +4404,6 @@ function GamesHub({
       title: "Кейс-баттлы",
       text: "Создавай комнаты, зови игроков или свиноботов и забирай весь банк.",
       action: "В баттлы",
-    },
-    {
-      id: "naval",
-      icon: "⚓",
-      eyebrow: "PIGGY NAVAL",
-      title: "Морской бой",
-      text: "Расставь флот, стреляй по скрытой доске и забери двойной банк.",
-      action: "В море",
     },
     {
       id: "mines",
@@ -4476,7 +4454,7 @@ function GamesHub({
           Выбери свою <strong>игру</strong>
         </h1>
         <p>
-          Восемь режимов, один свинобаланс и настоящая конкуренция с игроками.
+          Семь режимов, один свинобаланс и настоящая конкуренция с игроками.
         </p>
       </div>
       <section className="daily-winners-strip">
@@ -5375,7 +5353,8 @@ function NavalBoard({
     </div>
   );
 }
-function NavalPage({
+// Retained for compatibility with old game data; no UI route exposes this mode.
+export function NavalPage({
   token,
   user,
   onRequireAuth,
@@ -6638,15 +6617,11 @@ function CaseModal({
               ) : <><b>{opening.map((drop) => drop.item.name).join(" · ")}</b><em>{caseDropsSold ? "Окно кейса остаётся открытым — можешь сразу открыть ещё." : "Оставь в инвентаре или продай сразу за полную цену."}</em></>}
             </div>
             <div className="case-result-actions">
-              {caseDropsSold ? (
-                <button className="login" onClick={onOpenAgain}>
-                  Открыть ещё
-                </button>
-              ) : (
+              <button className="login" onClick={onClose}>
+                В инвентарь
+              </button>
+              {!caseDropsSold && (
                 <>
-                  <button className="login" onClick={onClose}>
-                    В инвентарь
-                  </button>
                   <button
                     className="case-sell-now"
                     disabled={sellingCaseDrops}
@@ -6658,6 +6633,9 @@ function CaseModal({
                   </button>
                 </>
               )}
+              <button className="pig-button case-open-again" onClick={onOpenAgain}>
+                Открыть ещё раз ↻
+              </button>
             </div>
           </div>
         )}
@@ -6944,7 +6922,6 @@ function AdminPanelV2({
     cases: "Кейсы",
     upgrade: "Апгрейд",
     battles: "Батлы кейсов",
-    naval: "Морской бой",
     mines: "Мины",
     pigsty: "Свинарник",
     road: "Свиная дорога",
