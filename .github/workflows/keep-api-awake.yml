@@ -1,0 +1,19 @@
+name: Keep SvinoDrop API awake
+
+on:
+  schedule:
+    # Render Free sleeps after 15 minutes with no inbound traffic.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping public health endpoint
+        run: >-
+          curl --fail --silent --show-error --max-time 120 --retry 2
+          https://svinodrop-api.onrender.com/api/health

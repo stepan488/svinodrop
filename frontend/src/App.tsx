@@ -590,6 +590,31 @@ async function request(
   return body;
 }
 
+// A free Render instance can need a short cold start after it was idle. Public
+// data should patiently retry instead of greeting the first visitor with an
+// alarming API error while the server is waking up.
+async function requestWithRetry(
+  path: string,
+  token?: string,
+  options: RequestInit = {},
+  attempts = 5,
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await request(path, token, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, 1_500 + attempt * 2_000),
+        );
+      }
+    }
+  }
+  throw lastError;
+}
+
 export default function App() {
   const [page, setPage] = useState<
     | "cases"
@@ -750,13 +775,13 @@ export default function App() {
     }
   };
   useEffect(() => {
-    request("/api/cases")
+    requestWithRetry("/api/cases")
       .then((data) => {
         setCases(data);
         setCasesReady(true);
       })
-      .catch(() => toast("Не удалось загрузить кейсы — проверь API."));
-    request("/api/items")
+      .catch(() => toast("Свинобаза пока недоступна — попробуй обновить страницу через минуту."));
+    requestWithRetry("/api/items")
       .then(setSkins)
       .catch(() => undefined);
     request("/api/chat")
