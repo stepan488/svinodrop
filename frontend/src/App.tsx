@@ -1135,9 +1135,12 @@ export default function App() {
     setUpgradeBalance(0);
     setSources([]);
     setTarget(null);
-    await request(`/api/upgrades/${upgradeResult.upgradeId}/reveal`, token, {
+    const reveal = await request(`/api/upgrades/${upgradeResult.upgradeId}/reveal`, token, {
       method: "POST",
     });
+    if (typeof reveal.balance === "number") {
+      setUser((current) => current ? { ...current, balance: reveal.balance } : current);
+    }
     await refreshPrivate();
   };
   // CSS animation events can be suppressed by reduced-motion/browser focus
@@ -1605,7 +1608,7 @@ export default function App() {
                     : upgradePhase === "result" &&
                         !upgradeResult?.success &&
                         upgradeResult?.compensation
-                      ? `Компенсация 5%: +${coins(upgradeResult.compensation)} SC уже на балансе`
+                      ? `Компенсация 5%: +${coins(upgradeResult.compensation)} SC зачислена на баланс`
                       : "Результат уже защищён сервером"}
                 </span>
               </div>

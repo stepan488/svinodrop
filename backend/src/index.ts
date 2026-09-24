@@ -882,17 +882,12 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
       }
       // sourceItemId keeps the legacy history relation; the full stake is
       // represented by the protected inventory records removed above.
-      const upgrade = await tx.upgrade.create({ data: { userId: req.session!.id, sourceItemId: sources[0].itemId, targetItemId: target.id, chance, balanceStake, result: success } });
-      if (success) await tx.inventory.create({ data: { userId: req.session!.id, itemId: target.id, upgradeId: upgrade.id, obtainedFrom: 'upgrade', revealed: true } });
-      // A miss burns the source skins, but returns a small deterministic
-      // consolation directly to balance. It is part of the same transaction
-      // as the stake removal, so a refresh cannot make it disappear.
+      // The consolation is stored with the protected result. It must not
+      // reach the balance while the upgrade wheel is still spinning.
       const compensation = success ? 0 : Math.floor(totalStake * 0.05);
-      const compensatedUser = compensation
-        ? await tx.user.update({ where: { id: user.id }, data: { balance: { increment: compensation } } })
-        : null;
-      if (compensation) await tx.transaction.create({ data: { userId: user.id, type: 'UPGRADE_COMPENSATION', amount: compensation, description: `Компенсация 5% за неудачный апгрейд «${target.name}»` } });
-      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: compensatedUser ? Number(compensatedUser.balance) : Number(user.balance) - balanceStake, balanceStake, compensation };
+      const upgrade = await tx.upgrade.create({ data: { userId: req.session!.id, sourceItemId: sources[0].itemId, targetItemId: target.id, chance, balanceStake, compensation, result: success } });
+      if (success) await tx.inventory.create({ data: { userId: req.session!.id, itemId: target.id, upgradeId: upgrade.id, obtainedFrom: 'upgrade', revealed: true } });
+      return { upgradeId: upgrade.id, success, chance, landingAngle, sources: sources.map((source) => source.item), target, balance: Number(user.balance) - balanceStake, balanceStake, compensation };
     }, { isolationLevel: 'Serializable' });
     res.json(outcome);
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Апгрейд не выполнен' }); }
@@ -900,11 +895,22 @@ app.post('/api/upgrades', auth, async (req: AuthedRequest, res) => {
 app.post('/api/upgrades/:id/reveal', auth, async (req: AuthedRequest, res) => {
   const upgrade = await prisma.upgrade.findFirst({ where: { id: req.params.id, userId: req.session!.id }, include: { user: true, targetItem: { select: itemSelect } } });
   if (!upgrade) return res.status(404).json({ error: 'Апгрейд не найден' });
-  if (!upgrade.revealed) {
-    await prisma.$transaction([prisma.upgrade.update({ where: { id: upgrade.id }, data: { revealed: true } }), ...(upgrade.result ? [prisma.inventory.updateMany({ where: { upgradeId: upgrade.id, revealed: false }, data: { revealed: true } })] : [])]);
-    if (upgrade.result) io.emit('drop:revealed', { username: upgrade.user.username, item: upgrade.targetItem, kind: 'апгрейд' });
-  }
-  res.json({ ok: true });
+  const reveal = await prisma.$transaction(async (tx) => {
+    // updateMany makes settlement idempotent: a double click or a late
+    // animation event can never pay the cashback twice.
+    const marked = await tx.upgrade.updateMany({ where: { id: upgrade.id, revealed: false }, data: { revealed: true } });
+    if (!marked.count) return { compensation: 0 };
+    if (upgrade.result) {
+      await tx.inventory.updateMany({ where: { upgradeId: upgrade.id, revealed: false }, data: { revealed: true } });
+      return { compensation: 0 };
+    }
+    if (!upgrade.compensation) return { compensation: 0 };
+    const user = await tx.user.update({ where: { id: upgrade.userId }, data: { balance: { increment: upgrade.compensation } } });
+    await tx.transaction.create({ data: { userId: upgrade.userId, type: 'UPGRADE_COMPENSATION', amount: upgrade.compensation, description: `Компенсация 5% за неудачный апгрейд «${upgrade.targetItem.name}»` } });
+    return { compensation: upgrade.compensation, balance: Number(user.balance) };
+  });
+  if (!upgrade.revealed && upgrade.result) io.emit('drop:revealed', { username: upgrade.user.username, item: upgrade.targetItem, kind: 'апгрейд' });
+  res.json({ ok: true, ...reveal });
 });
 
 type MinesStatus = 'PLAYING' | 'LOST' | 'CASHED_OUT' | 'WON';
@@ -1591,17 +1597,36 @@ setInterval(() => { void ensureCrashRound().catch((error) => console.error('Cras
 app.post('/api/recover-pending', auth, async (req: AuthedRequest, res) => {
   const userId = req.session!.id;
   const [upgrades, drops] = await Promise.all([
-    prisma.upgrade.findMany({ where: { userId, revealed: false }, select: { id: true, result: true } }),
+    prisma.upgrade.findMany({ where: { userId, revealed: false }, select: { id: true, result: true, compensation: true, targetItem: { select: { name: true } } } }),
     prisma.drop.findMany({ where: { userId, revealed: false }, select: { id: true } }),
   ]);
   if (!upgrades.length && !drops.length) return res.json({ recoveredUpgrades: 0, recoveredDrops: 0 });
-  await prisma.$transaction([
-    ...(upgrades.length ? [prisma.upgrade.updateMany({ where: { id: { in: upgrades.map((upgrade) => upgrade.id) } }, data: { revealed: true } })] : []),
-    ...(drops.length ? [prisma.drop.updateMany({ where: { id: { in: drops.map((drop) => drop.id) } }, data: { revealed: true } })] : []),
-    ...(upgrades.some((upgrade) => upgrade.result) ? [prisma.inventory.updateMany({ where: { userId, upgradeId: { in: upgrades.filter((upgrade) => upgrade.result).map((upgrade) => upgrade.id) }, revealed: false }, data: { revealed: true } })] : []),
-    ...(drops.length ? [prisma.inventory.updateMany({ where: { userId, dropId: { in: drops.map((drop) => drop.id) }, revealed: false }, data: { revealed: true } })] : []),
-  ]);
-  res.json({ recoveredUpgrades: upgrades.length, recoveredDrops: drops.length });
+  const recovered = await prisma.$transaction(async (tx) => {
+    let recoveredUpgrades = 0;
+    let compensation = 0;
+    const compensationRows: { userId: string; type: string; amount: number; description: string }[] = [];
+    for (const upgrade of upgrades) {
+      const marked = await tx.upgrade.updateMany({ where: { id: upgrade.id, revealed: false }, data: { revealed: true } });
+      if (!marked.count) continue;
+      recoveredUpgrades += 1;
+      if (upgrade.result) {
+        await tx.inventory.updateMany({ where: { userId, upgradeId: upgrade.id, revealed: false }, data: { revealed: true } });
+      } else if (upgrade.compensation) {
+        compensation += upgrade.compensation;
+        compensationRows.push({ userId, type: 'UPGRADE_COMPENSATION', amount: upgrade.compensation, description: `Компенсация 5% за неудачный апгрейд «${upgrade.targetItem.name}»` });
+      }
+    }
+    if (compensation) {
+      await tx.user.update({ where: { id: userId }, data: { balance: { increment: compensation } } });
+      await tx.transaction.createMany({ data: compensationRows });
+    }
+    if (drops.length) {
+      await tx.drop.updateMany({ where: { id: { in: drops.map((drop) => drop.id) }, revealed: false }, data: { revealed: true } });
+      await tx.inventory.updateMany({ where: { userId, dropId: { in: drops.map((drop) => drop.id) }, revealed: false }, data: { revealed: true } });
+    }
+    return { recoveredUpgrades };
+  });
+  res.json({ recoveredUpgrades: recovered.recoveredUpgrades, recoveredDrops: drops.length });
 });
 
 app.post('/api/promos/redeem', auth, async (req: AuthedRequest, res) => {

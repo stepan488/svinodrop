@@ -137,6 +137,7 @@ model Upgrade {
   targetItemId String
   chance Int
   balanceStake Int @default(0)
+  compensation Int @default(0)
   result Boolean
   revealed Boolean @default(false)
   createdAt DateTime @default(now())
