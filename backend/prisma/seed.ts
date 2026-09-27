@@ -171,7 +171,7 @@ async function main() {
   // These four cases were introduced by the farm update itself, so this
   // one-off repair is safe: it fixes their poor starter pools without ever
   // touching owner-created cases or later admin edits elsewhere.
-  const farmDropsRepairKey = 'farm-case-drops-visible-egg-v1'
+  const farmDropsRepairKey = 'farm-case-drops-visible-egg-v2'
   if (!await prisma.siteSetting.findUnique({ where: { key: farmDropsRepairKey } })) {
     for (const config of CASES.filter((entry) => entry.collection === 'СвиноФермеры')) {
       const caseData = await prisma.case.findUnique({ where: { slug: config.slug } })

@@ -524,7 +524,7 @@ const FARM_TAP_TARGETS = [1_000, 5_000, 10_000] as const;
 const FARM_MAX_LIVE_PIGS = 3;
 const FARM_HATCH_COST = 100_000;
 const FARM_FEED_COST = 1_500_000; // 15 000 SC in the integer money format.
-const FARM_CARE_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
+const FARM_FEED_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const FARM_LIFESPAN_DAYS = 90;
 const FARM_EGG_ITEM_ID = 'farm-egg';
 
@@ -552,11 +552,11 @@ async function settleFarmLife(userId: string) {
       await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'GRADUATED', graduatedAt: now } });
       continue;
     }
-    // For the first three days a newborn is protected. Afterwards, each rolling
-    // 72-hour window needs at least two real care actions.
-    if (now.getTime() - pig.hatchedAt.getTime() < FARM_CARE_WINDOW_MS) continue;
-    const careCount = await prisma.farmCare.count({ where: { pigId: pig.id, createdAt: { gte: new Date(now.getTime() - FARM_CARE_WINDOW_MS) } } });
-    if (careCount < 2) await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'DEAD', diedAt: now } });
+    // Feeding is the one mandatory action: after the first day, a pig must be
+    // fed at least once every 24 real hours. Petting is purely a happy bonus.
+    const lastFeed = await prisma.farmCare.findFirst({ where: { pigId: pig.id, type: 'FEED' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const feedDeadline = (lastFeed?.createdAt || pig.hatchedAt).getTime() + FARM_FEED_WINDOW_MS;
+    if (now.getTime() > feedDeadline) await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'DEAD', diedAt: now } });
   }
 }
 async function farmView(userId: string) {
@@ -568,12 +568,14 @@ async function farmView(userId: string) {
   const now = new Date();
   const publicPig = (pig: typeof profile.pigs[number]) => {
     const ageDays = farmAgeDays(pig.hatchedAt, now);
-    const recentCare = pig.care.filter((entry) => entry.createdAt.getTime() >= now.getTime() - FARM_CARE_WINDOW_MS);
+    const lastFeed = pig.care.find((entry) => entry.type === 'FEED');
+    const feedBase = lastFeed?.createdAt || pig.hatchedAt;
     return {
       id: pig.id, name: pig.name, status: pig.status, hatchedAt: pig.hatchedAt,
       diedAt: pig.diedAt, graduatedAt: pig.graduatedAt, ageDays,
-      growthStage: farmGrowthStage(ageDays), careInWindow: recentCare.length,
-      nextCareRequiredAt: new Date(pig.hatchedAt.getTime() + FARM_CARE_WINDOW_MS),
+      growthStage: farmGrowthStage(ageDays), careInWindow: lastFeed ? 1 : 0,
+      lastFedAt: lastFeed?.createdAt || null,
+      nextFeedRequiredAt: new Date(feedBase.getTime() + FARM_FEED_WINDOW_MS),
       recentCare: pig.care.map((entry) => ({ type: entry.type, createdAt: entry.createdAt })),
     };
   };
@@ -585,7 +587,7 @@ async function farmView(userId: string) {
     tapCount: canEarnEgg ? profile.tapCount : 0, tapTarget, eggs: profile.eggs,
     farmCoins: profile.farmCoins, hatchCost: FARM_HATCH_COST,
     hatchingStage: profile.hatchingStage, hatchingName: profile.hatchingName,
-    feedCost: FARM_FEED_COST, careWindowHours: 72, maxPigs: FARM_MAX_LIVE_PIGS,
+    feedCost: FARM_FEED_COST, careWindowHours: 24, maxPigs: FARM_MAX_LIVE_PIGS,
     activePig: activePigs[0] || null, activePigs, availableSlots: FARM_MAX_LIVE_PIGS - activePigs.length,
     cemetery: pigs.filter((pig) => pig.status === 'DEAD').slice(0, 18),
     graduates: pigs.filter((pig) => pig.status === 'GRADUATED').slice(0, 8),
@@ -692,7 +694,7 @@ app.post('/api/farm/hatch/crack', auth, async (req: AuthedRequest, res) => {
 });
 app.post('/api/farm/care', auth, async (req: AuthedRequest, res) => {
   const type = req.body?.type;
-  if (type !== 'PET' && type !== 'FEED' && type !== 'WASH') return res.status(400).json({ error: 'Выбери погладить, покормить или помыть свинку.' });
+  if (type !== 'PET' && type !== 'FEED') return res.status(400).json({ error: 'Выбери погладить или покормить свинку.' });
   try {
     await assertModeOpen('farm');
     await settleFarmLife(req.session!.id);

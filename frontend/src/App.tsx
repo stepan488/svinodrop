@@ -272,6 +272,8 @@ type FarmPig = {
   growthStage: number;
   careInWindow: number;
   nextCareRequiredAt: string;
+  lastFedAt?: string | null;
+  nextFeedRequiredAt?: string;
   recentCare: Array<{ type: "PET" | "FEED" | "WASH"; createdAt: string }>;
 };
 type FarmState = {
@@ -4429,7 +4431,6 @@ const farmCrackImages = [
 ];
 const farmHatchedImage = "https://i.ibb.co/QvGXJrfh/image.png";
 const farmBackgroundImage = "https://i.ibb.co/RG4F4TJf/image.png";
-const farmSpongeImage = "https://i.ibb.co/DDkSC72j/image.png";
 const farmPigGrowthImages = [
   "https://i.ibb.co/DD9m7VkC/image.png",
   "https://i.ibb.co/3yV9NwjV/image.png",
@@ -4464,9 +4465,8 @@ function FarmPage({
   const [farm, setFarm] = useState<FarmState | null>(null);
   const [busy, setBusy] = useState(false);
   const [pigName, setPigName] = useState("Пятачок");
-  const [washActive, setWashActive] = useState(false);
-  const [washProgress, setWashProgress] = useState(0);
   const [hatched, setHatched] = useState(false);
+  const [eggImpact, setEggImpact] = useState(0);
   const [selectedPigId, setSelectedPigId] = useState<string | null>(null);
   const tapQueue = useRef(0);
   const tapTimer = useRef<number | null>(null);
@@ -4556,6 +4556,7 @@ function FarmPage({
   const crack = async () => {
     if (busy) return;
     setBusy(true);
+    setEggImpact((value) => value + 1);
     try {
       const data = await request("/api/farm/hatch/crack", token, { method: "POST" });
       setFarm(data.farm);
@@ -4570,7 +4571,7 @@ function FarmPage({
     } catch (error) { toast(error instanceof Error ? error.message : "Скорлупа не поддалась."); }
     finally { setBusy(false); }
   };
-  const care = async (type: "PET" | "FEED" | "WASH") => {
+  const care = async (type: "PET" | "FEED") => {
     if (!user || busy) return !user ? onRequireAuth() : undefined;
     setBusy(true);
     try {
@@ -4578,29 +4579,9 @@ function FarmPage({
       setFarm(data.farm);
       if (typeof data.balance === "number") await onBalance();
       playSiteSound(type === "PET" ? "reveal" : "cashout");
-      toast(type === "PET" ? "Свинка довольно хрюкнула!" : type === "FEED" ? "Корм съеден — уход засчитан." : "Чистая свинка счастлива!");
+      toast(type === "PET" ? "Свинка довольно хрюкнула!" : "Корм съеден — свинка сыта ещё 24 часа.");
     } catch (error) { toast(error instanceof Error ? error.message : "Уход не засчитался."); }
     finally { setBusy(false); }
-  };
-  useEffect(() => {
-    if (!washActive) return;
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      const progress = Math.min(100, Math.round((Date.now() - startedAt) / 300));
-      setWashProgress(progress);
-      if (progress >= 100) {
-        window.clearInterval(timer);
-        setWashActive(false);
-        setWashProgress(0);
-        void care("WASH");
-      }
-    }, 100);
-    return () => window.clearInterval(timer);
-  }, [washActive]);
-  const stopWash = () => {
-    if (!washActive) return;
-    setWashActive(false);
-    setWashProgress(0);
   };
   const activePigs = farm?.activePigs || (farm?.activePig ? [farm.activePig] : []);
   const activePig = activePigs.find((pig) => pig.id === selectedPigId) || activePigs[0];
@@ -4608,7 +4589,6 @@ function FarmPage({
     if (activePig && activePig.id !== selectedPigId) setSelectedPigId(activePig.id);
     if (!activePig) setSelectedPigId(null);
   }, [activePig?.id]);
-  const careNeeded = activePig ? Math.max(0, 2 - activePig.careInWindow) : 0;
   const stageImage = activePig ? farmPigGrowthImages[Math.min(4, Math.max(0, activePig.growthStage))] : farmTapPigImage;
 
   return (
@@ -4634,7 +4614,7 @@ function FarmPage({
           ) : farm?.hatchingStage ? (
             <button className="farm-egg-breaker" disabled={busy} onClick={crack}>
               <p className="eyebrow">УДАР {farm.hatchingStage}/3</p><b>БЕЙ ПО ЯЙЦУ!</b>
-              <img src={farmCrackImages[farm.hatchingStage - 1]} alt="Фермерское яйцо" />
+              <img key={`${farm.hatchingStage}-${eggImpact}`} className="farm-egg-hit" src={farmCrackImages[farm.hatchingStage - 1]} alt={`Фермерское яйцо, удар ${farm.hatchingStage} из 3`} />
               <small>{farm.hatchingStage === 1 ? "Первый удар расколет скорлупу" : farm.hatchingStage === 2 ? "Ещё один удар — оно почти готово" : "Последний удар — и свинка вылупится"}</small>
             </button>
           ) : activePig ? (
@@ -4660,12 +4640,9 @@ function FarmPage({
         </main>
         {activePig && <aside className="farm-care-card">
           <p className="eyebrow">УХОД ЗА {activePig.name.toUpperCase()}</p>
-          <div className="farm-care-status"><b>{activePig.ageDays < 3 ? "Первые 3 дня под защитой" : `До безопасности: ${careNeeded} из 2 дел`}</b><small>Каждые 3 дня нужно минимум 2 процедуры.</small></div>
-          <button className="farm-care pet" disabled={busy} onClick={() => void care("PET")}><span>🤲</span><b>Погладить</b><small>бесплатно</small></button>
-          <button className="farm-care feed" disabled={busy} onClick={() => void care("FEED")}><span>🥕</span><b>Покормить</b><small>{coins(farm?.feedCost || 0)} SC</small></button>
-          <button className={`farm-care wash ${washActive ? "washing" : ""}`} disabled={busy && !washActive} onPointerDown={() => !busy && setWashActive(true)} onPointerUp={stopWash} onPointerLeave={stopWash} onPointerCancel={stopWash}>
-            <img src={farmSpongeImage} alt="Губка" /><b>{washActive ? `Моем… ${washProgress}%` : "Тереть губкой"}</b><small>удерживай 30 сек.</small><i style={{ width: `${washProgress}%` }} />
-          </button>
+          <div className="farm-care-status"><b>{activePig.lastFedAt ? "Свинка накормлена" : "Нужно покормить сегодня"}</b><small>Кормление обязательно раз в 24 часа. Поглаживание — для настроения.</small></div>
+          <button className="farm-care pet farm-care-animated" disabled={busy} onClick={() => void care("PET")}><span>🤲</span><b>Погладить</b><small>бесплатно · сердечки</small><i className="farm-hearts">♥ ♥ ♥</i></button>
+          <button className="farm-care feed farm-care-animated" disabled={busy} onClick={() => void care("FEED")}><span>🥕</span><b>Покормить</b><small>{coins(farm?.feedCost || 0)} SC · обязательно</small><i className="farm-feed-spark">✦ ✦ ✦</i></button>
         </aside>}
       </section>
       <section className="farm-cases-section">
