@@ -519,7 +519,6 @@ const FARM_TAP_TARGET = 1_000;
 const FARM_HATCH_COST = 100_000;
 const FARM_FEED_COST = 1_500_000; // 15 000 SC in the integer money format.
 const FARM_CARE_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
-const FARM_CARE_COOLDOWN_MS = 20 * 60 * 60 * 1_000;
 const FARM_LIFESPAN_DAYS = 90;
 const farmEggChanceByCase: Record<string, number> = {
   'farm-little-pig': 8, // 0.08%
@@ -691,8 +690,6 @@ app.post('/api/farm/care', auth, async (req: AuthedRequest, res) => {
       const profile = await tx.farmProfile.findUniqueOrThrow({ where: { userId: req.session!.id } });
       const pig = await tx.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, orderBy: { hatchedAt: 'asc' } });
       if (!pig) throw new Error('На ферме пока нет живой свинки, которой нужен уход.');
-      const previous = await tx.farmCare.findFirst({ where: { pigId: pig.id, type }, orderBy: { createdAt: 'desc' } });
-      if (previous && Date.now() - previous.createdAt.getTime() < FARM_CARE_COOLDOWN_MS) throw new Error('Этот вид ухода уже был недавно. Попробуй другую процедуру или вернись позже.');
       let balance: number | undefined;
       if (type === 'FEED') {
         const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
