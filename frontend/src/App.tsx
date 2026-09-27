@@ -4621,12 +4621,12 @@ function FarmPage({
         <div className="farm-stage-head"><span>🥚 ЯЙЦА: <b>{farm?.eggs || 0}</b></span><span>{activePigs.length ? `🐷 Свинок на ферме: ${activePigs.length}/${farm?.maxPigs || 3}` : "🌾 Ферма ждёт новую свинку"}</span></div>
         <aside className="farm-tap-card">
           <p className="eyebrow">ПАСТУШКА ЯИЦ</p><b>Натапай яйцо</b>
-          <button className="farm-tap-pig" onClick={tap} disabled={!farm?.tapTarget} aria-label="Пасти свинку">
+          <button className="farm-tap-pig" onClick={tap} disabled={Boolean(user && farm && !farm.tapTarget)} aria-label="Пасти свинку">
             <img src={farmTapPigImage} alt="Свинка для тапов" />
             <span>Тап!</span>
           </button>
-          <div className="farm-progress"><i style={{ width: `${Math.min(100, ((farm?.tapCount || 0) / (farm?.tapTarget || 1)) * 100)}%` }} /><b>{farm?.tapTarget ? `${(farm?.tapCount || 0).toLocaleString("ru-RU")} / ${farm.tapTarget.toLocaleString("ru-RU")}` : "Все места заняты"}</b></div>
-          <small>{farm?.tapTarget ? `${farm.tapTarget.toLocaleString("ru-RU")} касаний = 1 яйцо` : "Освободи место, чтобы снова добывать яйца"}</small>
+          <div className="farm-progress"><i style={{ width: `${Math.min(100, ((farm?.tapCount || 0) / (farm?.tapTarget || 1)) * 100)}%` }} /><b>{!user ? "Войди, чтобы начать" : farm?.tapTarget ? `${(farm?.tapCount || 0).toLocaleString("ru-RU")} / ${farm.tapTarget.toLocaleString("ru-RU")}` : "Все места заняты"}</b></div>
+          <small>{!user ? "Прогресс привязан к твоему аккаунту" : farm?.tapTarget ? `${farm.tapTarget.toLocaleString("ru-RU")} касаний = 1 яйцо` : "Освободи место, чтобы снова добывать яйца"}</small>
         </aside>
         <main className="farm-main-scene">
           {hatched ? (
