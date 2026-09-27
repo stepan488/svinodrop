@@ -303,6 +303,8 @@ model FarmProfile {
   farmCoins Int @default(0)
   hatchingStage Int @default(0)
   hatchingName String?
+  bonusBag Int @default(0)
+  lastBonusDay String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

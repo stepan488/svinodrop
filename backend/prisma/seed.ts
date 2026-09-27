@@ -69,10 +69,10 @@ export const CASES = [
   { name: 'Алмазная Свинка', slug: 'diamond-pig', price: 2879900, image: 'https://i.ibb.co/4gTFcZgG/5b38f5b8-f09e-4d63-a269-7736a8e372f5.png', collection: 'От рубля до ножа', itemIds: ['15','16','17','18','19','20','21','22','23','24'], weights: {} },
   // The egg is a real, visible result. It is intentionally very rare, but is
   // shown in the roulette/result instead of being awarded invisibly.
-  { name: 'Маленькая Свинка', slug: 'farm-little-pig', price: 66700, image: 'https://i.ibb.co/VYV2yNwn/image.png', collection: 'СвиноФермеры', itemIds: ['3','4','5','6','7','8','9','farm-egg'], weights: { '3': 90, '4': 140, '5': 210, '6': 300, '7': 360, '8': 280, '9': 110, 'farm-egg': 2 } },
-  { name: 'Старшая Свинка', slug: 'farm-senior-pig', price: 167600, image: 'https://i.ibb.co/0yg4CV3R/c110c0d5-7619-4857-baf0-269c5c82c77c.png', collection: 'СвиноФермеры', itemIds: ['6','7','8','9','10','11','12','13','farm-egg'], weights: { '6': 80, '7': 140, '8': 220, '9': 290, '10': 360, '11': 250, '12': 120, '13': 40, 'farm-egg': 3 } },
-  { name: 'Старенькая Свинка', slug: 'farm-elder-pig', price: 416700, image: 'https://i.ibb.co/5X2GwPxt/b8c9a755-1e50-4546-9253-b07eed9abea1.png', collection: 'СвиноФермеры', itemIds: ['10','11','12','13','14','15','16','17','farm-egg'], weights: { '10': 80, '11': 140, '12': 230, '13': 290, '14': 330, '15': 300, '16': 180, '17': 60, 'farm-egg': 5 } },
-  { name: 'Пророк Свинка', slug: 'farm-prophet-pig', price: 866700, image: 'https://i.ibb.co/v4yrPwJ1/image.png', collection: 'СвиноФермеры', itemIds: ['15','16','17','18','19','20','21','22','farm-egg'], weights: { '15': 80, '16': 170, '17': 310, '18': 320, '19': 270, '20': 180, '21': 100, '22': 35, 'farm-egg': 8 } },
+  { name: 'Маленькая Свинка', slug: 'farm-little-pig', price: 66700, image: 'https://i.ibb.co/VYV2yNwn/image.png', collection: 'СвиноФермеры', itemIds: ['3','4','5','6','7','8','9','farm-egg'], weights: { '3': 160, '4': 230, '5': 330, '6': 330, '7': 250, '8': 130, '9': 50, 'farm-egg': 2 } },
+  { name: 'Старшая Свинка', slug: 'farm-senior-pig', price: 167600, image: 'https://i.ibb.co/0yg4CV3R/c110c0d5-7619-4857-baf0-269c5c82c77c.png', collection: 'СвиноФермеры', itemIds: ['6','7','8','9','10','11','12','13','farm-egg'], weights: { '6': 160, '7': 250, '8': 330, '9': 310, '10': 220, '11': 110, '12': 45, '13': 12, 'farm-egg': 3 } },
+  { name: 'Старенькая Свинка', slug: 'farm-elder-pig', price: 416700, image: 'https://i.ibb.co/5X2GwPxt/b8c9a755-1e50-4546-9253-b07eed9abea1.png', collection: 'СвиноФермеры', itemIds: ['10','11','12','13','14','15','16','17','farm-egg'], weights: { '10': 180, '11': 300, '12': 340, '13': 270, '14': 150, '15': 75, '16': 28, '17': 8, 'farm-egg': 5 } },
+  { name: 'Пророк Свинка', slug: 'farm-prophet-pig', price: 866700, image: 'https://i.ibb.co/v4yrPwJ1/image.png', collection: 'СвиноФермеры', itemIds: ['15','16','17','18','19','20','21','22','farm-egg'], weights: { '15': 210, '16': 330, '17': 310, '18': 200, '19': 90, '20': 34, '21': 12, '22': 3, 'farm-egg': 8 } },
   // Magic cases hide their contents and never use the standard roulette.
   // The short lists and low-biased weights keep multi-drops exciting without
   // making the collection a guaranteed profit machine.
@@ -171,7 +171,7 @@ async function main() {
   // These four cases were introduced by the farm update itself, so this
   // one-off repair is safe: it fixes their poor starter pools without ever
   // touching owner-created cases or later admin edits elsewhere.
-  const farmDropsRepairKey = 'farm-case-drops-visible-egg-v2'
+  const farmDropsRepairKey = 'farm-case-drops-visible-egg-v3'
   if (!await prisma.siteSetting.findUnique({ where: { key: farmDropsRepairKey } })) {
     for (const config of CASES.filter((entry) => entry.collection === 'СвиноФермеры')) {
       const caseData = await prisma.case.findUnique({ where: { slug: config.slug } })

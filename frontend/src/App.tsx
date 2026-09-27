@@ -274,6 +274,10 @@ type FarmPig = {
   nextCareRequiredAt: string;
   lastFedAt?: string | null;
   nextFeedRequiredAt?: string;
+  mood: number;
+  hunger: number;
+  petToday: number;
+  feedsToday: number;
   recentCare: Array<{ type: "PET" | "FEED" | "WASH"; createdAt: string }>;
 };
 type FarmState = {
@@ -290,6 +294,7 @@ type FarmState = {
   activePigs: FarmPig[];
   maxPigs: number;
   availableSlots: number;
+  bonusBag: number;
   cemetery: FarmPig[];
   graduates: FarmPig[];
 };
@@ -4468,6 +4473,9 @@ function FarmPage({
   const [hatched, setHatched] = useState(false);
   const [eggImpact, setEggImpact] = useState(0);
   const [selectedPigId, setSelectedPigId] = useState<string | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [petBurst, setPetBurst] = useState(0);
+  const [feedBurst, setFeedBurst] = useState(0);
   const tapQueue = useRef(0);
   const tapTimer = useRef<number | null>(null);
   const tapSending = useRef(false);
@@ -4577,6 +4585,8 @@ function FarmPage({
     try {
       const data = await request("/api/farm/care", token, { method: "POST", body: JSON.stringify({ type, pigId: selectedPigId }) });
       setFarm(data.farm);
+      if (type === "PET") setPetBurst((value) => value + 1);
+      else setFeedBurst((value) => value + 1);
       if (typeof data.balance === "number") await onBalance();
       playSiteSound(type === "PET" ? "reveal" : "cashout");
       toast(type === "PET" ? "Свинка довольно хрюкнула!" : "Корм съеден — свинка сыта ещё 24 часа.");
@@ -4589,13 +4599,34 @@ function FarmPage({
     if (activePig && activePig.id !== selectedPigId) setSelectedPigId(activePig.id);
     if (!activePig) setSelectedPigId(null);
   }, [activePig?.id]);
+  useEffect(() => { if (activePig) setRenameName(activePig.name); }, [activePig?.id]);
+  const renamePig = async () => {
+    if (!activePig || busy) return;
+    setBusy(true);
+    try {
+      const data = await request(`/api/farm/pigs/${activePig.id}/rename`, token, { method: "POST", body: JSON.stringify({ name: renameName }) });
+      setFarm(data.farm);
+      toast("Свинка получила новое имя!");
+    } catch (error) { toast(error instanceof Error ? error.message : "Не удалось переименовать свинку."); }
+    finally { setBusy(false); }
+  };
+  const claimFarmBonus = async () => {
+    if (!farm?.bonusBag || busy) return;
+    setBusy(true);
+    try {
+      const data = await request("/api/farm/bonus/claim", token, { method: "POST" });
+      setFarm(data.farm); await onBalance(); playSiteSound("win");
+      toast(`🐷 Забрано из мешочка: ${coins(data.amount)} SC!`);
+    } catch (error) { toast(error instanceof Error ? error.message : "Не удалось забрать бонус."); }
+    finally { setBusy(false); }
+  };
   const stageImage = activePig ? farmPigGrowthImages[Math.min(4, Math.max(0, activePig.growthStage))] : farmTapPigImage;
 
   return (
     <section className="page compact-page farm-page">
       <header className="farm-hero">
         <div><p className="eyebrow">PIGGY FARM · 90 ДНЕЙ ЗАБОТЫ</p><h1>Свино<strong>Ферма</strong></h1><p>Тапай по пастушке, добывай яйца и вырасти свою свинку до почётных 90 дней.</p></div>
-        <div className="farm-wallet"><span>🌿</span><div><small>ФЕРМА-КОИНЫ</small><b>{(farm?.farmCoins || 0).toLocaleString("ru-RU")}</b></div><em>+1% цены каждого кейса</em></div>
+        <div className="farm-hero-tools"><button className={`farm-bonus-bag ${farm?.bonusBag ? "ready" : ""}`} onClick={claimFarmBonus} disabled={!farm?.bonusBag || busy} title="Награда за идеальный уход"><span>👜</span><b>{farm?.bonusBag ? `+${coins(farm.bonusBag)} SC` : "Мешочек"}</b><small>{farm?.bonusBag ? "Забрать" : "Идеальный день"}</small></button><div className="farm-wallet"><span>🌿</span><div><small>ФЕРМА-КОИНЫ</small><b>{(farm?.farmCoins || 0).toLocaleString("ru-RU")}</b></div><em>+1% цены каждого кейса</em></div></div>
       </header>
       <section className="farm-stage" style={{ backgroundImage: `linear-gradient(180deg,#12071834,#100611cc),url(${farmBackgroundImage})` }}>
         <div className="farm-stage-head"><span>🥚 ЯЙЦА: <b>{farm?.eggs || 0}</b></span><span>{activePigs.length ? `🐷 Свинок на ферме: ${activePigs.length}/${farm?.maxPigs || 3}` : "🌾 Ферма ждёт новую свинку"}</span></div>
@@ -4627,7 +4658,8 @@ function FarmPage({
                 <img src={stageImage} alt={activePig.name} />
                 <span>Нажми, чтобы погладить</span>
               </button>
-              <div className="farm-pig-caption"><p className="eyebrow">УРОВЕНЬ РОСТА {activePig.growthStage + 1}/5</p><h2>{activePig.name}</h2><p>{activePig.ageDays >= 85 ? "Почти легенда фермы!" : activePig.ageDays >= 60 ? "Опытная взрослая свинка" : activePig.ageDays >= 30 ? "Свинка заметно подросла" : activePig.ageDays >= 15 ? "Свинка крепнет с каждым днём" : "Новенькая малышка на ферме"}</p>{activePigs.length < (farm?.maxPigs || 3) && farm?.eggs ? <button className="login farm-hatch-next" disabled={busy || (farm?.farmCoins || 0) < (farm?.hatchCost || 100000)} onClick={startHatch}>Вылупить ещё одну</button> : null}</div>
+              <div className="farm-pig-burst" aria-hidden="true">{petBurst > 0 && <span key={`pet-${petBurst}`} className="farm-center-hearts">♥ ♥ ♥ ♥ ♥</span>}{feedBurst > 0 && <span key={`feed-${feedBurst}`} className="farm-center-feed">✦ 🥕 ✦</span>}</div>
+              <div className="farm-pig-caption"><p className="eyebrow">УРОВЕНЬ РОСТА {activePig.growthStage + 1}/5</p><div className="farm-rename"><input value={renameName} maxLength={24} onChange={(event) => setRenameName(event.target.value)} aria-label="Имя свинки"/><button onClick={renamePig} disabled={busy || renameName.trim() === activePig.name}>Переименовать</button></div><div className="farm-vitals"><span><i style={{ width: `${activePig.mood}%` }} />😊 Настроение <b>{activePig.mood}%</b></span><span className="hunger"><i style={{ width: `${activePig.hunger}%` }} />🥕 Сытость <b>{activePig.hunger}%</b></span></div><p>{activePig.ageDays >= 85 ? "Почти легенда фермы!" : activePig.ageDays >= 60 ? "Опытная взрослая свинка" : activePig.ageDays >= 30 ? "Свинка заметно подросла" : activePig.ageDays >= 15 ? "Свинка крепнет с каждым днём" : "Новенькая малышка на ферме"}</p>{activePigs.length < (farm?.maxPigs || 3) && farm?.eggs ? <button className="login farm-hatch-next" disabled={busy || (farm?.farmCoins || 0) < (farm?.hatchCost || 100000)} onClick={startHatch}>Вылупить ещё одну</button> : null}</div>
             </div>
           ) : (
             <div className="farm-incubator">
@@ -4640,7 +4672,7 @@ function FarmPage({
         </main>
         {activePig && <aside className="farm-care-card">
           <p className="eyebrow">УХОД ЗА {activePig.name.toUpperCase()}</p>
-          <div className="farm-care-status"><b>{activePig.lastFedAt ? "Свинка накормлена" : "Нужно покормить сегодня"}</b><small>Кормление обязательно раз в 24 часа. Поглаживание — для настроения.</small></div>
+          <div className="farm-care-status"><b>{activePig.lastFedAt ? `Кормлений сегодня: ${activePig.feedsToday}/2` : "Нужно покормить сегодня"}</b><small>Максимум 2 кормления в день. Пет + две порции = мешочек 20–100k SC.</small></div>
           <button className="farm-care pet farm-care-animated" disabled={busy} onClick={() => void care("PET")}><span>🤲</span><b>Погладить</b><small>бесплатно · сердечки</small><i className="farm-hearts">♥ ♥ ♥</i></button>
           <button className="farm-care feed farm-care-animated" disabled={busy} onClick={() => void care("FEED")}><span>🥕</span><b>Покормить</b><small>{coins(farm?.feedCost || 0)} SC · обязательно</small><i className="farm-feed-spark">✦ ✦ ✦</i></button>
         </aside>}
@@ -6741,7 +6773,9 @@ function CaseModal({
   const multi = (opening?.length || count) > 1;
   const bulk = !magic && (opening?.length || count) >= 5;
   const batchCount = opening?.length || count;
-  const reels = opening?.map((drop) => drop.item) || [undefined];
+  // Before a large series starts, show every future lane rather than one
+  // stretched placeholder. It makes ×5/×10 feel like a real multispin.
+  const reels = opening?.map((drop) => drop.item) || Array.from({ length: bulk ? batchCount : 1 }, () => undefined);
   const contents = [...data.items].sort(
     (left, right) => left.item.price - right.item.price,
   );
