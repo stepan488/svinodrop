@@ -37,6 +37,7 @@ export const BASE_MARKET_ITEMS = [
   { id: '31', name: 'AWP | История о драконе', wear: 'FT', price: 60000230, rarity: 'CONTRABAND', image: 'https://cdn2.csgo.com/item/image/width=916/AWP%20%7C%20Dragon%20Lore%20(Field-Tested).webp' },
   { id: '32', name: 'Sticker | Titan (Holo) | Katowice 2014', wear: 'Holo', price: 740000000, rarity: 'CONTRABAND', image: 'https://cdn.tradeit.gg/csgo%2FSticker%20-%20Titan%20(Holo)%20-%20Katowice%202014_240x152.webp' },
   { id: '33', name: 'Наклейка | Vox Eminor (голографическая) | Катовице-2014', wear: 'Holo', price: 275620000, rarity: 'CONTRABAND', image: 'https://imageproxy.waxpeer.com/insecure/rs:fit:552:385:0/g:nowe/f:webp/plain/https://images.waxpeer.com/i/730-sticker-vox-eminor-holo-katowice-2014.webp' },
+  { id: 'farm-egg', name: 'Фермерское яйцо', wear: 'СвиноФерма', price: 100, rarity: 'FARM_EGG', image: 'https://i.ibb.co/whqj8tJc/d321c0cd-a4da-4097-873e-80caafe88748.png', upgradeEligible: false },
 ] as const
 
 export const MARKET_ITEMS = BASE_MARKET_ITEMS
@@ -66,12 +67,12 @@ export const CASES = [
   { name: 'Серебряная Свинка', slug: 'silver-pig', price: 549900, image: 'https://i.ibb.co/3bxYFqN/259db9b0-1b65-4a3c-a0db-4cd6e850ed68.png', collection: 'От рубля до ножа', itemIds: ['4','5','6','7','8','9','10','11','12','13'], weights: {} },
   { name: 'Золотая Свинка', slug: 'gold-pig', price: 1129900, image: 'https://i.ibb.co/HLzj34nn/c11187df-fda2-4f20-b861-256468e28b05.png', collection: 'От рубля до ножа', itemIds: ['8','9','10','11','12','13','14','15','16','17'], weights: {} },
   { name: 'Алмазная Свинка', slug: 'diamond-pig', price: 2879900, image: 'https://i.ibb.co/4gTFcZgG/5b38f5b8-f09e-4d63-a269-7736a8e372f5.png', collection: 'От рубля до ножа', itemIds: ['15','16','17','18','19','20','21','22','23','24'], weights: {} },
-  // Farm cases live only in the Pig Farm screen. A tiny independent egg chance
-  // is applied by the API on opening; their normal skin pools stay visible.
-  { name: 'Маленькая Свинка', slug: 'farm-little-pig', price: 66700, image: 'https://i.ibb.co/VYV2yNwn/image.png', collection: 'СвиноФермеры', itemIds: ['1','2','3','4'], weights: {} },
-  { name: 'Старшая Свинка', slug: 'farm-senior-pig', price: 167600, image: 'https://i.ibb.co/0yg4CV3R/c110c0d5-7619-4857-baf0-269c5c82c77c.png', collection: 'СвиноФермеры', itemIds: ['2','3','4','5','6'], weights: {} },
-  { name: 'Старенькая Свинка', slug: 'farm-elder-pig', price: 416700, image: 'https://i.ibb.co/5X2GwPxt/b8c9a755-1e50-4546-9253-b07eed9abea1.png', collection: 'СвиноФермеры', itemIds: ['4','5','6','7','8','9'], weights: {} },
-  { name: 'Пророк Свинка', slug: 'farm-prophet-pig', price: 866700, image: 'https://i.ibb.co/v4yrPwJ1/image.png', collection: 'СвиноФермеры', itemIds: ['6','7','8','9','10','11'], weights: {} },
+  // The egg is a real, visible result. It is intentionally very rare, but is
+  // shown in the roulette/result instead of being awarded invisibly.
+  { name: 'Маленькая Свинка', slug: 'farm-little-pig', price: 66700, image: 'https://i.ibb.co/VYV2yNwn/image.png', collection: 'СвиноФермеры', itemIds: ['3','4','5','6','7','8','9','farm-egg'], weights: { '3': 90, '4': 140, '5': 210, '6': 300, '7': 360, '8': 280, '9': 110, 'farm-egg': 2 } },
+  { name: 'Старшая Свинка', slug: 'farm-senior-pig', price: 167600, image: 'https://i.ibb.co/0yg4CV3R/c110c0d5-7619-4857-baf0-269c5c82c77c.png', collection: 'СвиноФермеры', itemIds: ['6','7','8','9','10','11','12','13','farm-egg'], weights: { '6': 80, '7': 140, '8': 220, '9': 290, '10': 360, '11': 250, '12': 120, '13': 40, 'farm-egg': 3 } },
+  { name: 'Старенькая Свинка', slug: 'farm-elder-pig', price: 416700, image: 'https://i.ibb.co/5X2GwPxt/b8c9a755-1e50-4546-9253-b07eed9abea1.png', collection: 'СвиноФермеры', itemIds: ['10','11','12','13','14','15','16','17','farm-egg'], weights: { '10': 80, '11': 140, '12': 230, '13': 290, '14': 330, '15': 300, '16': 180, '17': 60, 'farm-egg': 5 } },
+  { name: 'Пророк Свинка', slug: 'farm-prophet-pig', price: 866700, image: 'https://i.ibb.co/v4yrPwJ1/image.png', collection: 'СвиноФермеры', itemIds: ['15','16','17','18','19','20','21','22','farm-egg'], weights: { '15': 80, '16': 170, '17': 310, '18': 320, '19': 270, '20': 180, '21': 100, '22': 35, 'farm-egg': 8 } },
   // Magic cases hide their contents and never use the standard roulette.
   // The short lists and low-biased weights keep multi-drops exciting without
   // making the collection a guaranteed profit machine.
@@ -166,6 +167,23 @@ async function main() {
 
   if (!silverRepairApplied) await prisma.siteSetting.create({ data: { key: silverRepairKey, value: new Date().toISOString() } })
   if (!trillionRepairApplied) await prisma.siteSetting.create({ data: { key: trillionRepairKey, value: new Date().toISOString() } })
+
+  // These four cases were introduced by the farm update itself, so this
+  // one-off repair is safe: it fixes their poor starter pools without ever
+  // touching owner-created cases or later admin edits elsewhere.
+  const farmDropsRepairKey = 'farm-case-drops-visible-egg-v1'
+  if (!await prisma.siteSetting.findUnique({ where: { key: farmDropsRepairKey } })) {
+    for (const config of CASES.filter((entry) => entry.collection === 'СвиноФермеры')) {
+      const caseData = await prisma.case.findUnique({ where: { slug: config.slug } })
+      if (!caseData) continue
+      const contents = MARKET_ITEMS.filter((item) => (config.itemIds as readonly string[]).includes(item.id))
+      await prisma.$transaction([
+        prisma.caseItem.deleteMany({ where: { caseId: caseData.id } }),
+        prisma.caseItem.createMany({ data: contents.map((item) => ({ caseId: caseData.id, itemId: item.id, weight: config.weights?.[item.id as keyof typeof config.weights] || caseWeight(item.price, config.price) })) }),
+      ])
+    }
+    await prisma.siteSetting.create({ data: { key: farmDropsRepairKey, value: new Date().toISOString() } })
+  }
 
   // Apply the owner-requested artwork once, then leave future admin changes alone.
   const artworkKey = 'catalog-art-sextillionaire-pig-v2'

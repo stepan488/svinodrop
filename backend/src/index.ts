@@ -129,6 +129,10 @@ async function rebalanceCollectionOdds() {
   // contents are concealed from the interface.
   const cases = await prisma.case.findMany({ where: { active: true }, include: { items: { include: { item: { select: { id: true, price: true, active: true } } } } } });
   for (const caseData of cases) {
+    // Farm cases deliberately include a symbolic resource with a tiny fixed
+    // chance. Their table is curated in the seed and must not be "fixed" by
+    // generic skin-economy balancing.
+    if (caseData.collection === 'СвиноФермеры') continue;
     // An owner-configured drop table always wins over automated balancing.
     if (manuallyManagedCaseIds.has(caseData.id)) continue;
     const rules = collectionOdds[caseData.collection as keyof typeof collectionOdds] || defaultCaseOdds;
@@ -169,7 +173,7 @@ const newMagicCases = [
 ] as const;
 
 async function ensureNewMagicCases() {
-  const catalogue = await prisma.item.findMany({ where: { active: true, id: { not: '32' } }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
+  const catalogue = await prisma.item.findMany({ where: { active: true, id: { notIn: ['32', FARM_EGG_ITEM_ID] } }, select: { id: true, price: true }, orderBy: { price: 'asc' } });
   for (const config of newMagicCases) {
     const existing = await prisma.case.findUnique({ where: { slug: config.slug }, include: { items: true } });
     if (existing) continue;
@@ -229,6 +233,7 @@ async function repairCaseEconomy() {
   });
   let corrected = 0;
   for (const caseData of cases) {
+    if (caseData.collection === 'СвиноФермеры') continue;
     const active = caseData.items.filter((entry) => entry.item.active);
     if (active.length < 2) continue;
     let economyItems: EconomyItem[] = active.map((entry) => ({ id: entry.item.id, price: entry.item.price }));
@@ -515,17 +520,13 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, online: onlineSockets
 // ── СвиноФерма ──────────────────────────────────────────────────────────────
 // The farm is deliberately server-owned: a player cannot turn back time by
 // changing their browser clock or refreshing between care actions.
-const FARM_TAP_TARGET = 1_000;
+const FARM_TAP_TARGETS = [1_000, 5_000, 10_000] as const;
+const FARM_MAX_LIVE_PIGS = 3;
 const FARM_HATCH_COST = 100_000;
 const FARM_FEED_COST = 1_500_000; // 15 000 SC in the integer money format.
 const FARM_CARE_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
 const FARM_LIFESPAN_DAYS = 90;
-const farmEggChanceByCase: Record<string, number> = {
-  'farm-little-pig': 8, // 0.08%
-  'farm-senior-pig': 12, // 0.12%
-  'farm-elder-pig': 22, // 0.22%
-  'farm-prophet-pig': 35, // 0.35%
-};
+const FARM_EGG_ITEM_ID = 'farm-egg';
 
 function farmAgeDays(hatchedAt: Date, now = new Date()) {
   return Math.max(0, Math.floor((now.getTime() - hatchedAt.getTime()) / 86_400_000));
@@ -542,19 +543,21 @@ async function ensureFarmProfile(userId: string) {
 }
 async function settleFarmLife(userId: string) {
   const profile = await ensureFarmProfile(userId);
-  const pig = await prisma.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, orderBy: { hatchedAt: 'asc' } });
-  if (!pig) return;
+  const living = await prisma.farmPig.findMany({ where: { profileId: profile.id, status: 'ALIVE' }, orderBy: { hatchedAt: 'asc' } });
+  if (!living.length) return;
   const now = new Date();
-  const ageDays = farmAgeDays(pig.hatchedAt, now);
-  if (ageDays >= FARM_LIFESPAN_DAYS) {
-    await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'GRADUATED', graduatedAt: now } });
-    return;
+  for (const pig of living) {
+    const ageDays = farmAgeDays(pig.hatchedAt, now);
+    if (ageDays >= FARM_LIFESPAN_DAYS) {
+      await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'GRADUATED', graduatedAt: now } });
+      continue;
+    }
+    // For the first three days a newborn is protected. Afterwards, each rolling
+    // 72-hour window needs at least two real care actions.
+    if (now.getTime() - pig.hatchedAt.getTime() < FARM_CARE_WINDOW_MS) continue;
+    const careCount = await prisma.farmCare.count({ where: { pigId: pig.id, createdAt: { gte: new Date(now.getTime() - FARM_CARE_WINDOW_MS) } } });
+    if (careCount < 2) await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'DEAD', diedAt: now } });
   }
-  // For the first three days a newborn is protected. Afterwards, each rolling
-  // 72-hour window needs at least two real care actions.
-  if (now.getTime() - pig.hatchedAt.getTime() < FARM_CARE_WINDOW_MS) return;
-  const careCount = await prisma.farmCare.count({ where: { pigId: pig.id, createdAt: { gte: new Date(now.getTime() - FARM_CARE_WINDOW_MS) } } });
-  if (careCount < 2) await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'DEAD', diedAt: now } });
 }
 async function farmView(userId: string) {
   await settleFarmLife(userId);
@@ -575,12 +578,15 @@ async function farmView(userId: string) {
     };
   };
   const pigs = profile.pigs.map(publicPig);
+  const activePigs = pigs.filter((pig) => pig.status === 'ALIVE');
+  const canEarnEgg = !profile.hatchingStage && activePigs.length < FARM_MAX_LIVE_PIGS;
+  const tapTarget = canEarnEgg ? FARM_TAP_TARGETS[activePigs.length] : 0;
   return {
-    tapCount: profile.tapCount, tapTarget: FARM_TAP_TARGET, eggs: profile.eggs,
+    tapCount: canEarnEgg ? profile.tapCount : 0, tapTarget, eggs: profile.eggs,
     farmCoins: profile.farmCoins, hatchCost: FARM_HATCH_COST,
     hatchingStage: profile.hatchingStage, hatchingName: profile.hatchingName,
-    feedCost: FARM_FEED_COST, careWindowHours: 72,
-    activePig: pigs.find((pig) => pig.status === 'ALIVE') || null,
+    feedCost: FARM_FEED_COST, careWindowHours: 72, maxPigs: FARM_MAX_LIVE_PIGS,
+    activePig: activePigs[0] || null, activePigs, availableSlots: FARM_MAX_LIVE_PIGS - activePigs.length,
     cemetery: pigs.filter((pig) => pig.status === 'DEAD').slice(0, 18),
     graduates: pigs.filter((pig) => pig.status === 'GRADUATED').slice(0, 8),
   };
@@ -636,9 +642,13 @@ app.post('/api/farm/tap', auth, async (req: AuthedRequest, res) => {
     await assertModeOpen('farm');
     const result = await prisma.$transaction(async (tx) => {
       const profile = await tx.farmProfile.upsert({ where: { userId: req.session!.id }, create: { userId: req.session!.id }, update: {} });
+      const activeCount = await tx.farmPig.count({ where: { profileId: profile.id, status: 'ALIVE' } });
+      if (profile.hatchingStage) throw new Error('Сначала разбей яйцо в инкубаторе.');
+      if (activeCount >= FARM_MAX_LIVE_PIGS) throw new Error('На ферме уже живут три свинки. Освободи место, когда придёт время.');
+      const target = FARM_TAP_TARGETS[activeCount];
       const total = profile.tapCount + clicks;
-      const eggsWon = Math.floor(total / FARM_TAP_TARGET);
-      const updated = await tx.farmProfile.update({ where: { id: profile.id }, data: { tapCount: total % FARM_TAP_TARGET, ...(eggsWon ? { eggs: { increment: eggsWon } } : {}) } });
+      const eggsWon = Math.floor(total / target);
+      const updated = await tx.farmProfile.update({ where: { id: profile.id }, data: { tapCount: total % target, ...(eggsWon ? { eggs: { increment: eggsWon } } : {}) } });
       return { eggsWon, tapCount: updated.tapCount, eggs: updated.eggs };
     }, { isolationLevel: 'Serializable' });
     res.json({ ...result, farm: await farmView(req.session!.id) });
@@ -652,8 +662,8 @@ app.post('/api/farm/hatch/start', auth, async (req: AuthedRequest, res) => {
     await settleFarmLife(req.session!.id);
     await prisma.$transaction(async (tx) => {
       const profile = await tx.farmProfile.findUniqueOrThrow({ where: { userId: req.session!.id } });
-      const activePig = await tx.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, select: { id: true } });
-      if (activePig) throw new Error('Сначала вырасти нынешнюю свинку. На ферме может жить только одна малышка одновременно.');
+      const activePigCount = await tx.farmPig.count({ where: { profileId: profile.id, status: 'ALIVE' } });
+      if (activePigCount >= FARM_MAX_LIVE_PIGS) throw new Error('На ферме уже живут три свинки. Новое яйцо можно вылупить, когда освободится место.');
       if (profile.hatchingStage) throw new Error('Это яйцо уже ждёт твоего удара.');
       if (profile.eggs < 1) throw new Error('Сначала получи яйцо: 1 000 тапов по свинке или редкий дроп из фермерских кейсов.');
       if (profile.farmCoins < FARM_HATCH_COST) throw new Error(`Для вылупления нужно ${FARM_HATCH_COST.toLocaleString('ru-RU')} ферма-коинов.`);
@@ -688,7 +698,8 @@ app.post('/api/farm/care', auth, async (req: AuthedRequest, res) => {
     await settleFarmLife(req.session!.id);
     const result = await prisma.$transaction(async (tx) => {
       const profile = await tx.farmProfile.findUniqueOrThrow({ where: { userId: req.session!.id } });
-      const pig = await tx.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, orderBy: { hatchedAt: 'asc' } });
+      const requestedPigId = typeof req.body?.pigId === 'string' ? req.body.pigId : undefined;
+      const pig = await tx.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE', ...(requestedPigId ? { id: requestedPigId } : {}) }, orderBy: { hatchedAt: 'asc' } });
       if (!pig) throw new Error('На ферме пока нет живой свинки, которой нужен уход.');
       let balance: number | undefined;
       if (type === 'FEED') {
@@ -982,14 +993,9 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
       const magicDropCount = !magic ? count : (magicRoll < 68 ? 1 : magicRoll < 93 ? 2 : 3);
       const magicBalanceReward = magic && crypto.randomInt(100) < 18
         ? Math.max(100, Math.round(caseData.price * (7 + crypto.randomInt(9)) / 100)) : 0;
-      // Every case grows the farm wallet by 1% of its displayed value. Farm
-      // collection cases additionally roll their deliberately tiny egg chance.
+      // Every case grows the farm wallet by 1% of its displayed value.
       const farmCoinsAwarded = Math.max(1, Math.round(total / 10_000));
-      const eggChance = farmEggChanceByCase[caseData.slug] || 0;
       let farmEggsWon = 0;
-      for (let index = 0; index < count; index += 1) {
-        if (eggChance && crypto.randomInt(10_000) < eggChance) farmEggsWon += 1;
-      }
       await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: total - magicBalanceReward } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'CASE_PURCHASE', amount: -total, description: `Открытие «${caseData.name}» ×${count}` } });
       if (magicBalanceReward) await tx.transaction.create({ data: { userId: user.id, type: 'MAGIC_CASE_COINS', amount: magicBalanceReward, description: `Магический бонус из «${caseData.name}»` } });
@@ -998,9 +1004,16 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
         create: { userId: user.id, farmCoins: farmCoinsAwarded, eggs: farmEggsWon },
         update: { farmCoins: { increment: farmCoinsAwarded }, ...(farmEggsWon ? { eggs: { increment: farmEggsWon } } : {}) },
       });
-      const drops = [] as Array<{ dropId: string; inventoryId: string; item: typeof eligible[number]['item'] }>;
+      const drops = [] as Array<{ dropId: string; inventoryId: string | null; item: typeof eligible[number]['item']; farmEgg?: boolean }>;
       for (let i = 0; i < magicDropCount; i += 1) {
         const winner = pickWeighted(eligible);
+        if (winner.itemId === FARM_EGG_ITEM_ID) {
+          // Eggs are a farm resource, never a sellable skin. Keeping this in
+          // the normal result list makes the rare win visible and exciting.
+          farmEggsWon += 1;
+          drops.push({ dropId: `farm-egg-${crypto.randomUUID()}`, inventoryId: null, item: winner.item!, farmEgg: true });
+          continue;
+        }
         const drop = await tx.drop.create({ data: { userId: user.id, itemId: winner.itemId, caseId: caseData.id } });
         // A prize belongs to the player as soon as this transaction commits.
         // The separate Drop.revealed flag still controls the animation/feed,
@@ -1008,6 +1021,7 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
         const inventory = await tx.inventory.create({ data: { userId: user.id, itemId: winner.itemId, dropId: drop.id, obtainedFrom: `case:${caseData.slug}`, revealed: true } });
         drops.push({ dropId: drop.id, inventoryId: inventory.id, item: winner.item! });
       }
+      if (farmEggsWon) await tx.farmProfile.update({ where: { userId: user.id }, data: { eggs: { increment: farmEggsWon } } });
       const response = { balance: Number(user.balance) - total + magicBalanceReward, caseName: caseData.name, drops, balanceReward: magicBalanceReward, openingStyle: caseData.openingStyle, farmCoinsAwarded, farmEggsWon };
       await tx.opening.create({ data: { userId: user.id, key: requestKey, response } });
       return response;
@@ -1592,7 +1606,7 @@ async function settleBattle(id: string) {
     if (!battle || battle.status !== 'WAITING' || battle.players.length < battle.playerLimit) return null;
     const locked = await tx.battle.updateMany({ where: { id, status: 'WAITING' }, data: { status: 'RUNNING' } });
     if (!locked.count) return null;
-    const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] }, active: true, openingStyle: { not: 'MAGIC' } }, include: { items: { include: { item: { select: itemSelect } } } } });
+    const cases = await tx.case.findMany({ where: { id: { in: battle.caseIds as string[] }, active: true, openingStyle: { not: 'MAGIC' }, collection: { not: 'СвиноФермеры' } }, include: { items: { include: { item: { select: itemSelect } } } } });
     if (cases.length !== new Set(battle.caseIds as string[]).size) throw new Error('Один из кейсов баттла недоступен.');
     const rounds = battle.players.map((player) => {
       const drops = (battle.caseIds as string[]).map((caseId) => {
@@ -1624,8 +1638,15 @@ async function settleBattle(id: string) {
       await tx.inventory.createMany({ data: allDrops.map((drop) => ({ userId: winner.userId!, itemId: drop.item.id, obtainedFrom: `battle:${battle.id}`, revealed: true })) });
       await tx.transaction.create({ data: { userId: winner.userId, type: 'BATTLE_WIN', amount: 0, description: `Победа в кейс-баттле · ${allDrops.length} предметов` } });
     }
+    // Every real participant opened the same paid case line, so every real
+    // participant receives the farm-coins bonus (1% of their battle entry).
+    const battleFarmCoins = Math.max(1, Math.round(cases.reduce((sum, entry) => sum + entry.price, 0) / 10_000));
+    const participantIds = [...new Set(battle.players.flatMap((player) => player.userId ? [player.userId] : []))];
+    for (const userId of participantIds) {
+      await tx.farmProfile.upsert({ where: { userId }, create: { userId, farmCoins: battleFarmCoins }, update: { farmCoins: { increment: battleFarmCoins } } });
+    }
     await tx.battle.update({ where: { id: battle.id }, data: { status: 'FINISHED', winnerUserId: winner.userId, results: { rounds, winnerIndex, jackpotPlayerIndexes }, settledAt: new Date() } });
-    return { id: battle.id, winner: publicPlayer(winner), rounds, mode: battle.mode };
+    return { id: battle.id, winner: publicPlayer(winner), rounds, mode: battle.mode, farmCoinsAwarded: battleFarmCoins };
   }, { isolationLevel: 'Serializable' });
   if (settled) io.emit('battle:updated', { id: settled.id });
   return settled;
@@ -1646,7 +1667,7 @@ app.post('/api/battles', auth, async (req: AuthedRequest, res) => {
     const created = await prisma.$transaction(async (tx) => {
       // Magic cases intentionally conceal their pool and can reveal several
       // rewards, so they are a solo-only mode and must never enter a battle.
-      const cases = await tx.case.findMany({ where: { id: { in: caseIds }, active: true, openingStyle: { not: 'MAGIC' } }, select: { id: true, price: true } });
+      const cases = await tx.case.findMany({ where: { id: { in: caseIds }, active: true, openingStyle: { not: 'MAGIC' }, collection: { not: 'СвиноФермеры' } }, select: { id: true, price: true } });
       if (cases.length !== new Set(caseIds).size) throw new Error('Магические и недоступные кейсы нельзя добавлять в баттл.');
       const cost = caseIds.reduce((sum, caseId) => sum + (cases.find((item) => item.id === caseId)?.price || 0), 0);
       const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });

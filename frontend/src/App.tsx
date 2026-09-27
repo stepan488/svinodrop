@@ -53,7 +53,7 @@ type User = {
   role: string;
   createdAt: string;
 };
-type Drop = { dropId: string; inventoryId: string; item: Skin };
+type Drop = { dropId: string; inventoryId: string | null; item: Skin; farmEgg?: boolean };
 type Feed = { username: string; item: Skin; kind: string };
 type LeaderboardRow = {
   id: string;
@@ -285,6 +285,9 @@ type FarmState = {
   feedCost: number;
   careWindowHours: number;
   activePig: FarmPig | null;
+  activePigs: FarmPig[];
+  maxPigs: number;
+  availableSlots: number;
   cemetery: FarmPig[];
   graduates: FarmPig[];
 };
@@ -1156,9 +1159,10 @@ export default function App() {
     setSellingCaseDrops(true);
     try {
       let balance = user?.balance || 0;
-      for (const drop of opening) {
+      const sellableDrops = opening.filter((drop) => drop.inventoryId && !drop.farmEgg);
+      for (const drop of sellableDrops) {
         const data = await request(
-          `/api/inventory/${drop.inventoryId}/sell`,
+          `/api/inventory/${drop.inventoryId!}/sell`,
           token,
           { method: "POST" },
         );
@@ -1170,7 +1174,7 @@ export default function App() {
         ),
       );
       setUser((current) => (current ? { ...current, balance } : current));
-      toast(`Продано дропов: ${opening.length}. Свинокоины уже на балансе.`);
+      toast(`Продано дропов: ${sellableDrops.length}. Свинокоины уже на балансе.`);
       setCaseDropsSold(true);
       await refreshPrivate();
     } catch (error) {
@@ -1202,7 +1206,7 @@ export default function App() {
     if (casePhase !== "spinning" || !opening) return;
     setCasePhase("result");
     await Promise.all(
-      opening.map((drop) =>
+      opening.filter((drop) => !drop.farmEgg).map((drop) =>
         request(`/api/drops/${drop.dropId}/reveal`, token, { method: "POST" }),
       ),
     );
@@ -2110,7 +2114,7 @@ export default function App() {
       {page === "battles" && (
         <BattlePage
           token={token}
-          cases={cases.filter((item) => item.openingStyle !== "MAGIC")}
+          cases={cases.filter((item) => item.openingStyle !== "MAGIC" && item.collection !== "СвиноФермеры")}
           user={user}
           onRequireAuth={() => setAuthOpen(true)}
           onBalance={refreshPrivate}
@@ -4434,10 +4438,10 @@ const farmPigGrowthImages = [
   "https://i.ibb.co/MkddBTWr/image.png",
 ];
 const farmEggChances: Record<string, string> = {
-  "farm-little-pig": "0,08%",
-  "farm-senior-pig": "0,12%",
-  "farm-elder-pig": "0,22%",
-  "farm-prophet-pig": "0,35%",
+  "farm-little-pig": "0,13%",
+  "farm-senior-pig": "0,17%",
+  "farm-elder-pig": "0,31%",
+  "farm-prophet-pig": "0,54%",
 };
 
 function FarmPage({
@@ -4463,6 +4467,7 @@ function FarmPage({
   const [washActive, setWashActive] = useState(false);
   const [washProgress, setWashProgress] = useState(0);
   const [hatched, setHatched] = useState(false);
+  const [selectedPigId, setSelectedPigId] = useState<string | null>(null);
   const tapQueue = useRef(0);
   const tapTimer = useRef<number | null>(null);
   const tapSending = useRef(false);
@@ -4477,6 +4482,24 @@ function FarmPage({
     }
   };
   useEffect(() => { void load(); }, [token]);
+  const tapStorageKey = user ? `svinodrop-farm-pending-taps:${user.id}` : null;
+  const saveQueuedTaps = () => {
+    if (!tapStorageKey) return;
+    if (tapQueue.current > 0) localStorage.setItem(tapStorageKey, String(tapQueue.current));
+    else localStorage.removeItem(tapStorageKey);
+  };
+  useEffect(() => {
+    if (!tapStorageKey) return;
+    const saved = Number(localStorage.getItem(tapStorageKey) || 0);
+    if (Number.isInteger(saved) && saved > 0) {
+      tapQueue.current += Math.min(20_000, saved);
+      localStorage.removeItem(tapStorageKey);
+      tapTimer.current = window.setTimeout(() => { tapTimer.current = null; void flushTaps(); }, 80);
+    }
+    const persist = () => saveQueuedTaps();
+    window.addEventListener("pagehide", persist);
+    return () => window.removeEventListener("pagehide", persist);
+  }, [tapStorageKey]);
   useEffect(() => () => {
     if (tapTimer.current) window.clearTimeout(tapTimer.current);
   }, []);
@@ -4486,6 +4509,7 @@ function FarmPage({
     tapSending.current = true;
     const clicks = Math.min(40, tapQueue.current);
     tapQueue.current -= clicks;
+    saveQueuedTaps();
     try {
       const data = await request("/api/farm/tap", token, { method: "POST", body: JSON.stringify({ clicks }) });
       setFarm(data.farm);
@@ -4494,22 +4518,25 @@ function FarmPage({
         toast(`🥚 Новое фермерское яйцо! Теперь их: ${data.eggs}.`);
       }
     } catch (error) {
+      tapQueue.current += clicks;
+      saveQueuedTaps();
       toast(error instanceof Error ? error.message : "Тапы не засчитались.");
       void load();
     } finally {
       tapSending.current = false;
-      if (tapQueue.current) tapTimer.current = window.setTimeout(() => void flushTaps(), 120);
+      if (tapQueue.current) tapTimer.current = window.setTimeout(() => { tapTimer.current = null; void flushTaps(); }, 120);
     }
   };
   const tap = () => {
     if (!user) return onRequireAuth();
+    if (!farm?.tapTarget) return toast("Сейчас яйцо добывать нельзя: закончи вылупление или освободи место на ферме.");
     setFarm((current) => {
       if (!current) return current;
       const total = current.tapCount + 1;
-      const eggsWon = Math.floor(total / current.tapTarget);
-      return { ...current, tapCount: total % current.tapTarget, eggs: current.eggs + eggsWon };
+      return { ...current, tapCount: Math.min(total, current.tapTarget) };
     });
     tapQueue.current += 1;
+    saveQueuedTaps();
     if (!tapTimer.current) tapTimer.current = window.setTimeout(() => {
       tapTimer.current = null;
       void flushTaps();
@@ -4547,7 +4574,7 @@ function FarmPage({
     if (!user || busy) return !user ? onRequireAuth() : undefined;
     setBusy(true);
     try {
-      const data = await request("/api/farm/care", token, { method: "POST", body: JSON.stringify({ type }) });
+      const data = await request("/api/farm/care", token, { method: "POST", body: JSON.stringify({ type, pigId: selectedPigId }) });
       setFarm(data.farm);
       if (typeof data.balance === "number") await onBalance();
       playSiteSound(type === "PET" ? "reveal" : "cashout");
@@ -4575,7 +4602,12 @@ function FarmPage({
     setWashActive(false);
     setWashProgress(0);
   };
-  const activePig = farm?.activePig;
+  const activePigs = farm?.activePigs || (farm?.activePig ? [farm.activePig] : []);
+  const activePig = activePigs.find((pig) => pig.id === selectedPigId) || activePigs[0];
+  useEffect(() => {
+    if (activePig && activePig.id !== selectedPigId) setSelectedPigId(activePig.id);
+    if (!activePig) setSelectedPigId(null);
+  }, [activePig?.id]);
   const careNeeded = activePig ? Math.max(0, 2 - activePig.careInWindow) : 0;
   const stageImage = activePig ? farmPigGrowthImages[Math.min(4, Math.max(0, activePig.growthStage))] : farmTapPigImage;
 
@@ -4586,15 +4618,15 @@ function FarmPage({
         <div className="farm-wallet"><span>🌿</span><div><small>ФЕРМА-КОИНЫ</small><b>{(farm?.farmCoins || 0).toLocaleString("ru-RU")}</b></div><em>+1% цены каждого кейса</em></div>
       </header>
       <section className="farm-stage" style={{ backgroundImage: `linear-gradient(180deg,#12071834,#100611cc),url(${farmBackgroundImage})` }}>
-        <div className="farm-stage-head"><span>🥚 ЯЙЦА: <b>{farm?.eggs || 0}</b></span><span>{activePig ? `🐷 ${activePig.name} · день ${activePig.ageDays}/90` : "🌾 Ферма ждёт новую свинку"}</span></div>
+        <div className="farm-stage-head"><span>🥚 ЯЙЦА: <b>{farm?.eggs || 0}</b></span><span>{activePigs.length ? `🐷 Свинок на ферме: ${activePigs.length}/${farm?.maxPigs || 3}` : "🌾 Ферма ждёт новую свинку"}</span></div>
         <aside className="farm-tap-card">
           <p className="eyebrow">ПАСТУШКА ЯИЦ</p><b>Натапай яйцо</b>
-          <button className="farm-tap-pig" onClick={tap} aria-label="Пасти свинку">
+          <button className="farm-tap-pig" onClick={tap} disabled={!farm?.tapTarget} aria-label="Пасти свинку">
             <img src={farmTapPigImage} alt="Свинка для тапов" />
             <span>Тап!</span>
           </button>
-          <div className="farm-progress"><i style={{ width: `${Math.min(100, ((farm?.tapCount || 0) / (farm?.tapTarget || 1000)) * 100)}%` }} /><b>{(farm?.tapCount || 0).toLocaleString("ru-RU")} / {farm?.tapTarget || 1000}</b></div>
-          <small>1 000 касаний = 1 яйцо</small>
+          <div className="farm-progress"><i style={{ width: `${Math.min(100, ((farm?.tapCount || 0) / (farm?.tapTarget || 1)) * 100)}%` }} /><b>{farm?.tapTarget ? `${(farm?.tapCount || 0).toLocaleString("ru-RU")} / ${farm.tapTarget.toLocaleString("ru-RU")}` : "Все места заняты"}</b></div>
+          <small>{farm?.tapTarget ? `${farm.tapTarget.toLocaleString("ru-RU")} касаний = 1 яйцо` : "Освободи место, чтобы снова добывать яйца"}</small>
         </aside>
         <main className="farm-main-scene">
           {hatched ? (
@@ -4607,11 +4639,15 @@ function FarmPage({
             </button>
           ) : activePig ? (
             <div className="farm-pig-home">
+              <div className="farm-pig-roster" aria-label="Свинки на ферме">
+                {activePigs.map((pig) => <button key={pig.id} className={pig.id === activePig.id ? "selected" : ""} onClick={() => setSelectedPigId(pig.id)}><span>🐷</span><b>{pig.name}</b><small>{pig.ageDays} дн.</small></button>)}
+                {activePigs.length < (farm?.maxPigs || 3) && <button className="farm-pig-slot" onClick={() => { if (farm?.eggs) return void startHatch(); toast("Сначала добудь яйцо для новой свинки."); }}><span>＋</span><b>Новая свинка</b><small>{farm?.eggs ? "вылупить" : "нужно яйцо"}</small></button>}
+              </div>
               <button className="farm-grown-pig" disabled={busy} onClick={() => void care("PET")} title="Погладить свинку">
                 <img src={stageImage} alt={activePig.name} />
                 <span>Нажми, чтобы погладить</span>
               </button>
-              <div className="farm-pig-caption"><p className="eyebrow">УРОВЕНЬ РОСТА {activePig.growthStage + 1}/5</p><h2>{activePig.name}</h2><p>{activePig.ageDays >= 85 ? "Почти легенда фермы!" : activePig.ageDays >= 60 ? "Опытная взрослая свинка" : activePig.ageDays >= 30 ? "Свинка заметно подросла" : activePig.ageDays >= 15 ? "Свинка крепнет с каждым днём" : "Новенькая малышка на ферме"}</p></div>
+              <div className="farm-pig-caption"><p className="eyebrow">УРОВЕНЬ РОСТА {activePig.growthStage + 1}/5</p><h2>{activePig.name}</h2><p>{activePig.ageDays >= 85 ? "Почти легенда фермы!" : activePig.ageDays >= 60 ? "Опытная взрослая свинка" : activePig.ageDays >= 30 ? "Свинка заметно подросла" : activePig.ageDays >= 15 ? "Свинка крепнет с каждым днём" : "Новенькая малышка на ферме"}</p>{activePigs.length < (farm?.maxPigs || 3) && farm?.eggs ? <button className="login farm-hatch-next" disabled={busy || (farm?.farmCoins || 0) < (farm?.hatchCost || 100000)} onClick={startHatch}>Вылупить ещё одну</button> : null}</div>
             </div>
           ) : (
             <div className="farm-incubator">
@@ -4626,7 +4662,7 @@ function FarmPage({
           <p className="eyebrow">УХОД ЗА {activePig.name.toUpperCase()}</p>
           <div className="farm-care-status"><b>{activePig.ageDays < 3 ? "Первые 3 дня под защитой" : `До безопасности: ${careNeeded} из 2 дел`}</b><small>Каждые 3 дня нужно минимум 2 процедуры.</small></div>
           <button className="farm-care pet" disabled={busy} onClick={() => void care("PET")}><span>🤲</span><b>Погладить</b><small>бесплатно</small></button>
-          <button className="farm-care feed" disabled={busy} onClick={() => void care("FEED")}><span>🥕</span><b>Покормить</b><small>{coins(farm.feedCost)} SC</small></button>
+          <button className="farm-care feed" disabled={busy} onClick={() => void care("FEED")}><span>🥕</span><b>Покормить</b><small>{coins(farm?.feedCost || 0)} SC</small></button>
           <button className={`farm-care wash ${washActive ? "washing" : ""}`} disabled={busy && !washActive} onPointerDown={() => !busy && setWashActive(true)} onPointerUp={stopWash} onPointerLeave={stopWash} onPointerCancel={stopWash}>
             <img src={farmSpongeImage} alt="Губка" /><b>{washActive ? `Моем… ${washProgress}%` : "Тереть губкой"}</b><small>удерживай 30 сек.</small><i style={{ width: `${washProgress}%` }} />
           </button>
@@ -6667,12 +6703,12 @@ function MagicReveal({
         >
           {opening?.map((drop, index) => (
             <article
-              key={drop.inventoryId}
+              key={drop.dropId}
               style={{ "--delay": `${index * 160}ms` } as React.CSSProperties}
             >
               <img src={drop.item.image} alt="" />
               <b>{drop.item.name}</b>
-              <em>{coins(drop.item.price)} SC</em>
+              <em>{drop.farmEgg ? "ФЕРМЕРСКОЕ ЯЙЦО" : `${coins(drop.item.price)} SC`}</em>
             </article>
           ))}
           {balanceReward > 0 && (
@@ -6889,11 +6925,11 @@ function CaseModal({
               {bulk ? (
                 <div className="case-batch-rewards">
                   {opening.map((drop, index) => (
-                    <article className={rarity(drop.item.rarity)} key={drop.dropId}>
+                    <article className={`${rarity(drop.item.rarity)} ${drop.farmEgg ? "farm-egg-drop" : ""}`} key={drop.dropId}>
                       <span>#{index + 1}</span>
                       <img src={drop.item.image} alt="" onError={({ currentTarget }) => { currentTarget.onerror = null; currentTarget.src = "/skin-fallback.svg"; }} />
                       <b>{drop.item.name}</b>
-                      <em>{coins(drop.item.price)} SC</em>
+                      <em>{drop.farmEgg ? "ФЕРМЕРСКОЕ ЯЙЦО" : `${coins(drop.item.price)} SC`}</em>
                     </article>
                   ))}
                 </div>
@@ -6909,7 +6945,7 @@ function CaseModal({
               <button className="login" onClick={onClose}>
                 В инвентарь
               </button>
-              {!caseDropsSold && (
+              {!caseDropsSold && opening.some((drop) => !drop.farmEgg && drop.inventoryId) && (
                 <>
                   <button
                     className="case-sell-now"
@@ -6918,7 +6954,7 @@ function CaseModal({
                   >
                     {sellingCaseDrops
                       ? "Продаём…"
-                      : `Продать · ${coins(opening.reduce((sum, drop) => sum + drop.item.price, 0))} SC`}
+                      : `Продать · ${coins(opening.filter((drop) => !drop.farmEgg).reduce((sum, drop) => sum + drop.item.price, 0))} SC`}
                   </button>
                 </>
               )}
