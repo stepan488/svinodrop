@@ -1379,7 +1379,7 @@ export default function App() {
                 <b>32</b> скина
               </span>
               <span>
-                <b>28</b> кейсов
+                <b>32</b> кейса
               </span>
               <span>
                 <b>100%</b> виртуально
