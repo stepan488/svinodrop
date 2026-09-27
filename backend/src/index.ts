@@ -512,10 +512,85 @@ app.use(rateLimit);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, online: onlineSockets.size }));
 
+// ── СвиноФерма ──────────────────────────────────────────────────────────────
+// The farm is deliberately server-owned: a player cannot turn back time by
+// changing their browser clock or refreshing between care actions.
+const FARM_TAP_TARGET = 1_000;
+const FARM_HATCH_COST = 100_000;
+const FARM_FEED_COST = 1_500_000; // 15 000 SC in the integer money format.
+const FARM_CARE_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
+const FARM_CARE_COOLDOWN_MS = 20 * 60 * 60 * 1_000;
+const FARM_LIFESPAN_DAYS = 90;
+const farmEggChanceByCase: Record<string, number> = {
+  'farm-little-pig': 8, // 0.08%
+  'farm-senior-pig': 12, // 0.12%
+  'farm-elder-pig': 22, // 0.22%
+  'farm-prophet-pig': 35, // 0.35%
+};
+
+function farmAgeDays(hatchedAt: Date, now = new Date()) {
+  return Math.max(0, Math.floor((now.getTime() - hatchedAt.getTime()) / 86_400_000));
+}
+function farmGrowthStage(ageDays: number) {
+  if (ageDays >= 85) return 4;
+  if (ageDays >= 60) return 3;
+  if (ageDays >= 30) return 2;
+  if (ageDays >= 15) return 1;
+  return 0;
+}
+async function ensureFarmProfile(userId: string) {
+  return prisma.farmProfile.upsert({ where: { userId }, create: { userId }, update: {} });
+}
+async function settleFarmLife(userId: string) {
+  const profile = await ensureFarmProfile(userId);
+  const pig = await prisma.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, orderBy: { hatchedAt: 'asc' } });
+  if (!pig) return;
+  const now = new Date();
+  const ageDays = farmAgeDays(pig.hatchedAt, now);
+  if (ageDays >= FARM_LIFESPAN_DAYS) {
+    await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'GRADUATED', graduatedAt: now } });
+    return;
+  }
+  // For the first three days a newborn is protected. Afterwards, each rolling
+  // 72-hour window needs at least two real care actions.
+  if (now.getTime() - pig.hatchedAt.getTime() < FARM_CARE_WINDOW_MS) return;
+  const careCount = await prisma.farmCare.count({ where: { pigId: pig.id, createdAt: { gte: new Date(now.getTime() - FARM_CARE_WINDOW_MS) } } });
+  if (careCount < 2) await prisma.farmPig.update({ where: { id: pig.id }, data: { status: 'DEAD', diedAt: now } });
+}
+async function farmView(userId: string) {
+  await settleFarmLife(userId);
+  const profile = await prisma.farmProfile.findUniqueOrThrow({
+    where: { userId },
+    include: { pigs: { include: { care: { orderBy: { createdAt: 'desc' }, take: 12 } }, orderBy: { hatchedAt: 'desc' } } },
+  });
+  const now = new Date();
+  const publicPig = (pig: typeof profile.pigs[number]) => {
+    const ageDays = farmAgeDays(pig.hatchedAt, now);
+    const recentCare = pig.care.filter((entry) => entry.createdAt.getTime() >= now.getTime() - FARM_CARE_WINDOW_MS);
+    return {
+      id: pig.id, name: pig.name, status: pig.status, hatchedAt: pig.hatchedAt,
+      diedAt: pig.diedAt, graduatedAt: pig.graduatedAt, ageDays,
+      growthStage: farmGrowthStage(ageDays), careInWindow: recentCare.length,
+      nextCareRequiredAt: new Date(pig.hatchedAt.getTime() + FARM_CARE_WINDOW_MS),
+      recentCare: pig.care.map((entry) => ({ type: entry.type, createdAt: entry.createdAt })),
+    };
+  };
+  const pigs = profile.pigs.map(publicPig);
+  return {
+    tapCount: profile.tapCount, tapTarget: FARM_TAP_TARGET, eggs: profile.eggs,
+    farmCoins: profile.farmCoins, hatchCost: FARM_HATCH_COST,
+    hatchingStage: profile.hatchingStage, hatchingName: profile.hatchingName,
+    feedCost: FARM_FEED_COST, careWindowHours: 72,
+    activePig: pigs.find((pig) => pig.status === 'ALIVE') || null,
+    cemetery: pigs.filter((pig) => pig.status === 'DEAD').slice(0, 18),
+    graduates: pigs.filter((pig) => pig.status === 'GRADUATED').slice(0, 8),
+  };
+}
+
 // Admin-toggleable "tech break" per game mode. Cached briefly in memory so a
 // hot-path bet endpoint doesn't hit the DB on every single request; the cache
 // is also dropped immediately whenever an admin changes the list.
-const MAINTENANCE_MODES = ['cases', 'upgrade', 'battles', 'naval', 'mines', 'pigsty', 'road', 'contract', 'crash', 'boss'] as const;
+const MAINTENANCE_MODES = ['cases', 'upgrade', 'battles', 'naval', 'mines', 'pigsty', 'road', 'contract', 'crash', 'boss', 'farm'] as const;
 type MaintenanceMode = (typeof MAINTENANCE_MODES)[number];
 let maintenanceCache: { modes: Set<string>; loadedAt: number } | null = null;
 async function getMaintenanceModes(): Promise<Set<string>> {
@@ -548,6 +623,90 @@ app.get('/api/site-settings', async (_req, res) => {
   res.json(title ? { collectionTitle: title.value } : {});
 });
 app.get('/api/items', async (_req, res) => res.json(await prisma.item.findMany({ where: { active: true }, select: itemSelect, orderBy: { price: 'asc' } })));
+
+app.get('/api/farm', auth, async (req: AuthedRequest, res) => {
+  try {
+    await assertModeOpen('farm');
+    res.json({ farm: await farmView(req.session!.id) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось загрузить СвиноФерму.' }); }
+});
+app.post('/api/farm/tap', auth, async (req: AuthedRequest, res) => {
+  const clicks = Number(req.body?.clicks);
+  if (!Number.isInteger(clicks) || clicks < 1 || clicks > 40) return res.status(400).json({ error: 'За один раз можно засчитать от 1 до 40 тапов.' });
+  try {
+    await assertModeOpen('farm');
+    const result = await prisma.$transaction(async (tx) => {
+      const profile = await tx.farmProfile.upsert({ where: { userId: req.session!.id }, create: { userId: req.session!.id }, update: {} });
+      const total = profile.tapCount + clicks;
+      const eggsWon = Math.floor(total / FARM_TAP_TARGET);
+      const updated = await tx.farmProfile.update({ where: { id: profile.id }, data: { tapCount: total % FARM_TAP_TARGET, ...(eggsWon ? { eggs: { increment: eggsWon } } : {}) } });
+      return { eggsWon, tapCount: updated.tapCount, eggs: updated.eggs };
+    }, { isolationLevel: 'Serializable' });
+    res.json({ ...result, farm: await farmView(req.session!.id) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Тапы пока не засчитались.' }); }
+});
+app.post('/api/farm/hatch/start', auth, async (req: AuthedRequest, res) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim().replace(/\s+/g, ' ') : '';
+  if (!name || name.length > 24) return res.status(400).json({ error: 'Дай свинке имя от 1 до 24 символов.' });
+  try {
+    await assertModeOpen('farm');
+    await settleFarmLife(req.session!.id);
+    await prisma.$transaction(async (tx) => {
+      const profile = await tx.farmProfile.findUniqueOrThrow({ where: { userId: req.session!.id } });
+      const activePig = await tx.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, select: { id: true } });
+      if (activePig) throw new Error('Сначала вырасти нынешнюю свинку. На ферме может жить только одна малышка одновременно.');
+      if (profile.hatchingStage) throw new Error('Это яйцо уже ждёт твоего удара.');
+      if (profile.eggs < 1) throw new Error('Сначала получи яйцо: 1 000 тапов по свинке или редкий дроп из фермерских кейсов.');
+      if (profile.farmCoins < FARM_HATCH_COST) throw new Error(`Для вылупления нужно ${FARM_HATCH_COST.toLocaleString('ru-RU')} ферма-коинов.`);
+      await tx.farmProfile.update({ where: { id: profile.id }, data: { eggs: { decrement: 1 }, farmCoins: { decrement: FARM_HATCH_COST }, hatchingStage: 1, hatchingName: name } });
+    }, { isolationLevel: 'Serializable' });
+    res.json({ farm: await farmView(req.session!.id) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось подготовить яйцо.' }); }
+});
+app.post('/api/farm/hatch/crack', auth, async (req: AuthedRequest, res) => {
+  try {
+    await assertModeOpen('farm');
+    let hatched = false;
+    await prisma.$transaction(async (tx) => {
+      const profile = await tx.farmProfile.findUniqueOrThrow({ where: { userId: req.session!.id } });
+      if (profile.hatchingStage < 1 || profile.hatchingStage > 3 || !profile.hatchingName) throw new Error('Положи яйцо в инкубатор, чтобы начать.');
+      if (profile.hatchingStage < 3) {
+        await tx.farmProfile.update({ where: { id: profile.id }, data: { hatchingStage: { increment: 1 } } });
+        return;
+      }
+      await tx.farmPig.create({ data: { profileId: profile.id, name: profile.hatchingName } });
+      await tx.farmProfile.update({ where: { id: profile.id }, data: { hatchingStage: 0, hatchingName: null } });
+      hatched = true;
+    }, { isolationLevel: 'Serializable' });
+    res.json({ hatched, farm: await farmView(req.session!.id) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Яйцо пока не треснуло.' }); }
+});
+app.post('/api/farm/care', auth, async (req: AuthedRequest, res) => {
+  const type = req.body?.type;
+  if (type !== 'PET' && type !== 'FEED' && type !== 'WASH') return res.status(400).json({ error: 'Выбери погладить, покормить или помыть свинку.' });
+  try {
+    await assertModeOpen('farm');
+    await settleFarmLife(req.session!.id);
+    const result = await prisma.$transaction(async (tx) => {
+      const profile = await tx.farmProfile.findUniqueOrThrow({ where: { userId: req.session!.id } });
+      const pig = await tx.farmPig.findFirst({ where: { profileId: profile.id, status: 'ALIVE' }, orderBy: { hatchedAt: 'asc' } });
+      if (!pig) throw new Error('На ферме пока нет живой свинки, которой нужен уход.');
+      const previous = await tx.farmCare.findFirst({ where: { pigId: pig.id, type }, orderBy: { createdAt: 'desc' } });
+      if (previous && Date.now() - previous.createdAt.getTime() < FARM_CARE_COOLDOWN_MS) throw new Error('Этот вид ухода уже был недавно. Попробуй другую процедуру или вернись позже.');
+      let balance: number | undefined;
+      if (type === 'FEED') {
+        const user = await tx.user.findUniqueOrThrow({ where: { id: req.session!.id } });
+        if (user.balance < FARM_FEED_COST) throw new Error('Не хватает 15 000 SC на корм.');
+        const updated = await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: FARM_FEED_COST } } });
+        balance = Number(updated.balance);
+        await tx.transaction.create({ data: { userId: user.id, type: 'FARM_FEED', amount: -FARM_FEED_COST, description: `Корм для свинки «${pig.name}»` } });
+      }
+      await tx.farmCare.create({ data: { pigId: pig.id, type } });
+      return { balance };
+    }, { isolationLevel: 'Serializable' });
+    res.json({ ...result, farm: await farmView(req.session!.id) });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Уход пока не засчитался.' }); }
+});
 app.get('/api/leaderboard', async (_req, res) => {
   const users = await prisma.user.findMany({
     where: { isBanned: false },
@@ -826,9 +985,22 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
       const magicDropCount = !magic ? count : (magicRoll < 68 ? 1 : magicRoll < 93 ? 2 : 3);
       const magicBalanceReward = magic && crypto.randomInt(100) < 18
         ? Math.max(100, Math.round(caseData.price * (7 + crypto.randomInt(9)) / 100)) : 0;
+      // Every case grows the farm wallet by 1% of its displayed value. Farm
+      // collection cases additionally roll their deliberately tiny egg chance.
+      const farmCoinsAwarded = Math.max(1, Math.round(total / 10_000));
+      const eggChance = farmEggChanceByCase[caseData.slug] || 0;
+      let farmEggsWon = 0;
+      for (let index = 0; index < count; index += 1) {
+        if (eggChance && crypto.randomInt(10_000) < eggChance) farmEggsWon += 1;
+      }
       await tx.user.update({ where: { id: user.id }, data: { balance: { decrement: total - magicBalanceReward } } });
       await tx.transaction.create({ data: { userId: user.id, type: 'CASE_PURCHASE', amount: -total, description: `Открытие «${caseData.name}» ×${count}` } });
       if (magicBalanceReward) await tx.transaction.create({ data: { userId: user.id, type: 'MAGIC_CASE_COINS', amount: magicBalanceReward, description: `Магический бонус из «${caseData.name}»` } });
+      await tx.farmProfile.upsert({
+        where: { userId: user.id },
+        create: { userId: user.id, farmCoins: farmCoinsAwarded, eggs: farmEggsWon },
+        update: { farmCoins: { increment: farmCoinsAwarded }, ...(farmEggsWon ? { eggs: { increment: farmEggsWon } } : {}) },
+      });
       const drops = [] as Array<{ dropId: string; inventoryId: string; item: typeof eligible[number]['item'] }>;
       for (let i = 0; i < magicDropCount; i += 1) {
         const winner = pickWeighted(eligible);
@@ -839,7 +1011,7 @@ app.post('/api/cases/:caseId/open', auth, async (req: AuthedRequest, res) => {
         const inventory = await tx.inventory.create({ data: { userId: user.id, itemId: winner.itemId, dropId: drop.id, obtainedFrom: `case:${caseData.slug}`, revealed: true } });
         drops.push({ dropId: drop.id, inventoryId: inventory.id, item: winner.item! });
       }
-      const response = { balance: Number(user.balance) - total + magicBalanceReward, caseName: caseData.name, drops, balanceReward: magicBalanceReward, openingStyle: caseData.openingStyle };
+      const response = { balance: Number(user.balance) - total + magicBalanceReward, caseName: caseData.name, drops, balanceReward: magicBalanceReward, openingStyle: caseData.openingStyle, farmCoinsAwarded, farmEggsWon };
       await tx.opening.create({ data: { userId: user.id, key: requestKey, response } });
       return response;
     }, { isolationLevel: 'Serializable' });

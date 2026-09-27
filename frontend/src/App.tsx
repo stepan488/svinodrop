@@ -261,6 +261,33 @@ type RoadGame = {
   last?: { choice: number; safe: boolean };
   maxSteps: number;
 };
+type FarmPig = {
+  id: string;
+  name: string;
+  status: "ALIVE" | "DEAD" | "GRADUATED";
+  hatchedAt: string;
+  diedAt?: string | null;
+  graduatedAt?: string | null;
+  ageDays: number;
+  growthStage: number;
+  careInWindow: number;
+  nextCareRequiredAt: string;
+  recentCare: Array<{ type: "PET" | "FEED" | "WASH"; createdAt: string }>;
+};
+type FarmState = {
+  tapCount: number;
+  tapTarget: number;
+  eggs: number;
+  farmCoins: number;
+  hatchCost: number;
+  hatchingStage: number;
+  hatchingName: string | null;
+  feedCost: number;
+  careWindowHours: number;
+  activePig: FarmPig | null;
+  cemetery: FarmPig[];
+  graduates: FarmPig[];
+};
 
 // Local development uses the separate API; a production build can use a
 // configured API subdomain or the same origin without shipping localhost.
@@ -626,6 +653,7 @@ export default function App() {
     | "road"
     | "contract"
     | "crash"
+    | "farm"
     | "boss"
     | "giveaways"
     | "inventory"
@@ -635,7 +663,7 @@ export default function App() {
     | "admin"
   >(() => {
     const saved = localStorage.getItem("svino-page");
-    const allowed = ["cases", "games", "upgrade", "battles", "mines", "pigsty", "road", "contract", "crash", "boss", "giveaways", "inventory", "profile", "chat", "leaderboard", "admin"];
+    const allowed = ["cases", "games", "upgrade", "battles", "mines", "pigsty", "road", "contract", "crash", "farm", "boss", "giveaways", "inventory", "profile", "chat", "leaderboard", "admin"];
     return (allowed.includes(saved || "") ? saved : "cases") as "cases";
   });
   const [cases, setCases] = useState<Case[]>(fallbackCases);
@@ -657,6 +685,7 @@ export default function App() {
   const [count, setCount] = useState(1);
   const [opening, setOpening] = useState<Drop[] | null>(null);
   const [caseBalanceReward, setCaseBalanceReward] = useState(0);
+  const [caseFarmReward, setCaseFarmReward] = useState({ coins: 0, eggs: 0 });
   const [casePhase, setCasePhase] = useState<"idle" | "spinning" | "result">(
     "idle",
   );
@@ -935,6 +964,7 @@ export default function App() {
       setCasePhase("spinning");
       setOpening(null);
       setCaseDropsSold(false);
+      setCaseFarmReward({ coins: 0, eggs: 0 });
       const data = await request(`/api/cases/${selectedCase.id}/open`, token, {
         method: "POST",
         headers: { "Idempotency-Key": crypto.randomUUID() },
@@ -942,6 +972,7 @@ export default function App() {
       });
       setOpening(data.drops);
       setCaseBalanceReward(data.balanceReward || 0);
+      setCaseFarmReward({ coins: data.farmCoinsAwarded || 0, eggs: data.farmEggsWon || 0 });
       setCasePhase("spinning");
       setUser((current) =>
         current ? { ...current, balance: data.balance } : current,
@@ -1209,6 +1240,7 @@ export default function App() {
     setCount(item.maxOpen === 1 ? 1 : [1, 2, 3, 4, 5, 10].includes(count) ? count : 1);
     setOpening(null);
     setCaseBalanceReward(0);
+    setCaseFarmReward({ coins: 0, eggs: 0 });
     setCaseDropsSold(false);
   };
   const toggleFavoriteCase = (caseId: string) =>
@@ -1218,12 +1250,13 @@ export default function App() {
         : [...current, caseId],
     );
   const normalizedCaseSearch = caseSearch.trim().toLocaleLowerCase("ru-RU");
+  const marketCases = cases.filter((item) => item.collection !== "СвиноФермеры");
   const displayedCases = normalizedCaseSearch
-    ? cases.filter((item) =>
+    ? marketCases.filter((item) =>
         item.name.toLocaleLowerCase("ru-RU").includes(normalizedCaseSearch),
       )
-    : cases;
-  const favoriteCases = cases.filter((item) =>
+    : marketCases;
+  const favoriteCases = marketCases.filter((item) =>
     favoriteCaseIds.includes(item.id),
   );
   const openPublicProfile = (id: string) =>
@@ -1254,6 +1287,7 @@ export default function App() {
             [
               ["cases", "Кейсы"],
               ["games", "Игры"],
+              ["farm", "🌿 СвиноФерма"],
               ["boss", "🔥 Босс"],
               ["giveaways", "Розыгрыши"],
               ["leaderboard", "Лидерборд"],
@@ -1371,6 +1405,7 @@ export default function App() {
               ["💣", "Свиные мины", "Риск и множители", "mines"],
               ["🐔", "Свинарник", "Поймай курицу — не бомбу", "pigsty"],
               ["🐷", "Свиная дорога", "20 шагов до ×48", "road"],
+              ["🥚", "СвиноФерма", "Выращивай свою свинку", "farm"],
               ["📜", "Контракт", "Собери скины", "contract"],
               ["🚀", "Свинокраш", "Успей забрать икс", "crash"],
             ].map(([icon, title, text, id]) => (
@@ -2136,6 +2171,17 @@ export default function App() {
           toast={toast}
         />
       )}
+      {page === "farm" && (
+        <FarmPage
+          token={token}
+          user={user}
+          cases={cases.filter((item) => item.collection === "СвиноФермеры")}
+          onOpenCase={selectCase}
+          onRequireAuth={() => setAuthOpen(true)}
+          onBalance={refreshPrivate}
+          toast={toast}
+        />
+      )}
       {page === "boss" && (
         <BossFightPage
           token={token}
@@ -2164,6 +2210,7 @@ export default function App() {
           setCount={setCount}
           opening={opening}
           balanceReward={caseBalanceReward}
+          farmReward={caseFarmReward}
           phase={casePhase}
           mode={caseMode}
           setMode={setCaseMode}
@@ -2175,6 +2222,7 @@ export default function App() {
               setCasePhase("idle");
               setOpening(null);
               setCaseBalanceReward(0);
+              setCaseFarmReward({ coins: 0, eggs: 0 });
               setCaseDropsSold(false);
             }
           }}
@@ -4368,6 +4416,231 @@ function BossFightPage({
   );
 }
 
+const farmTapPigImage = "https://i.ibb.co/mFJt7PgQ/image.png";
+const farmEggImage = "https://i.ibb.co/whqj8tJc/d321c0cd-a4da-4097-873e-80caafe88748.png";
+const farmCrackImages = [
+  "https://i.ibb.co/whqj8tJc/d321c0cd-a4da-4097-873e-80caafe88748.png",
+  "https://i.ibb.co/ycbTYRSJ/image.png",
+  "https://i.ibb.co/B2SWhYqt/image.png",
+];
+const farmHatchedImage = "https://i.ibb.co/QvGXJrfh/image.png";
+const farmBackgroundImage = "https://i.ibb.co/RG4F4TJf/image.png";
+const farmSpongeImage = "https://i.ibb.co/DDkSC72j/image.png";
+const farmPigGrowthImages = [
+  "https://i.ibb.co/DD9m7VkC/image.png",
+  "https://i.ibb.co/3yV9NwjV/image.png",
+  "https://i.ibb.co/fz5DbwMf/image.png",
+  "https://i.ibb.co/hJ2Rv3pt/image.png",
+  "https://i.ibb.co/MkddBTWr/image.png",
+];
+const farmEggChances: Record<string, string> = {
+  "farm-little-pig": "0,08%",
+  "farm-senior-pig": "0,12%",
+  "farm-elder-pig": "0,22%",
+  "farm-prophet-pig": "0,35%",
+};
+
+function FarmPage({
+  token,
+  user,
+  cases,
+  onOpenCase,
+  onRequireAuth,
+  onBalance,
+  toast,
+}: {
+  token: string;
+  user: User | null;
+  cases: Case[];
+  onOpenCase: (item: Case) => void;
+  onRequireAuth: () => void;
+  onBalance: () => Promise<void>;
+  toast: (text: string) => void;
+}) {
+  const [farm, setFarm] = useState<FarmState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pigName, setPigName] = useState("Пятачок");
+  const [washActive, setWashActive] = useState(false);
+  const [washProgress, setWashProgress] = useState(0);
+  const [hatched, setHatched] = useState(false);
+  const tapQueue = useRef(0);
+  const tapTimer = useRef<number | null>(null);
+  const tapSending = useRef(false);
+
+  const load = async () => {
+    if (!token) { setFarm(null); return; }
+    try {
+      const data = await request("/api/farm", token);
+      setFarm(data.farm);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Не удалось загрузить СвиноФерму.");
+    }
+  };
+  useEffect(() => { void load(); }, [token]);
+  useEffect(() => () => {
+    if (tapTimer.current) window.clearTimeout(tapTimer.current);
+  }, []);
+
+  const flushTaps = async () => {
+    if (tapSending.current || !tapQueue.current || !token) return;
+    tapSending.current = true;
+    const clicks = Math.min(40, tapQueue.current);
+    tapQueue.current -= clicks;
+    try {
+      const data = await request("/api/farm/tap", token, { method: "POST", body: JSON.stringify({ clicks }) });
+      setFarm(data.farm);
+      if (data.eggsWon) {
+        playSiteSound("win");
+        toast(`🥚 Новое фермерское яйцо! Теперь их: ${data.eggs}.`);
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Тапы не засчитались.");
+      void load();
+    } finally {
+      tapSending.current = false;
+      if (tapQueue.current) tapTimer.current = window.setTimeout(() => void flushTaps(), 120);
+    }
+  };
+  const tap = () => {
+    if (!user) return onRequireAuth();
+    setFarm((current) => {
+      if (!current) return current;
+      const total = current.tapCount + 1;
+      const eggsWon = Math.floor(total / current.tapTarget);
+      return { ...current, tapCount: total % current.tapTarget, eggs: current.eggs + eggsWon };
+    });
+    tapQueue.current += 1;
+    if (!tapTimer.current) tapTimer.current = window.setTimeout(() => {
+      tapTimer.current = null;
+      void flushTaps();
+    }, 130);
+  };
+  const startHatch = async () => {
+    if (!user) return onRequireAuth();
+    setBusy(true);
+    try {
+      const data = await request("/api/farm/hatch/start", token, { method: "POST", body: JSON.stringify({ name: pigName }) });
+      setFarm(data.farm);
+      playSiteSound("reveal");
+      toast("Яйцо в инкубаторе. Бей по нему три раза!");
+    } catch (error) { toast(error instanceof Error ? error.message : "Яйцо не удалось подготовить."); }
+    finally { setBusy(false); }
+  };
+  const crack = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await request("/api/farm/hatch/crack", token, { method: "POST" });
+      setFarm(data.farm);
+      if (data.hatched) {
+        setHatched(true);
+        playSiteSound("win");
+        toast("🐷 Свинка вылупилась! Теперь она ждёт твоей заботы.");
+        window.setTimeout(() => setHatched(false), 2_200);
+      } else {
+        playSiteSound("card");
+      }
+    } catch (error) { toast(error instanceof Error ? error.message : "Скорлупа не поддалась."); }
+    finally { setBusy(false); }
+  };
+  const care = async (type: "PET" | "FEED" | "WASH") => {
+    if (!user || busy) return !user ? onRequireAuth() : undefined;
+    setBusy(true);
+    try {
+      const data = await request("/api/farm/care", token, { method: "POST", body: JSON.stringify({ type }) });
+      setFarm(data.farm);
+      if (typeof data.balance === "number") await onBalance();
+      playSiteSound(type === "PET" ? "reveal" : "cashout");
+      toast(type === "PET" ? "Свинка довольно хрюкнула!" : type === "FEED" ? "Корм съеден — уход засчитан." : "Чистая свинка счастлива!");
+    } catch (error) { toast(error instanceof Error ? error.message : "Уход не засчитался."); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => {
+    if (!washActive) return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const progress = Math.min(100, Math.round((Date.now() - startedAt) / 300));
+      setWashProgress(progress);
+      if (progress >= 100) {
+        window.clearInterval(timer);
+        setWashActive(false);
+        setWashProgress(0);
+        void care("WASH");
+      }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [washActive]);
+  const stopWash = () => {
+    if (!washActive) return;
+    setWashActive(false);
+    setWashProgress(0);
+  };
+  const activePig = farm?.activePig;
+  const careNeeded = activePig ? Math.max(0, 2 - activePig.careInWindow) : 0;
+  const stageImage = activePig ? farmPigGrowthImages[Math.min(4, Math.max(0, activePig.growthStage))] : farmTapPigImage;
+
+  return (
+    <section className="page compact-page farm-page">
+      <header className="farm-hero">
+        <div><p className="eyebrow">PIGGY FARM · 90 ДНЕЙ ЗАБОТЫ</p><h1>Свино<strong>Ферма</strong></h1><p>Тапай по пастушке, добывай яйца и вырасти свою свинку до почётных 90 дней.</p></div>
+        <div className="farm-wallet"><span>🌿</span><div><small>ФЕРМА-КОИНЫ</small><b>{(farm?.farmCoins || 0).toLocaleString("ru-RU")}</b></div><em>+1% цены каждого кейса</em></div>
+      </header>
+      <section className="farm-stage" style={{ backgroundImage: `linear-gradient(180deg,#12071834,#100611cc),url(${farmBackgroundImage})` }}>
+        <div className="farm-stage-head"><span>🥚 ЯЙЦА: <b>{farm?.eggs || 0}</b></span><span>{activePig ? `🐷 ${activePig.name} · день ${activePig.ageDays}/90` : "🌾 Ферма ждёт новую свинку"}</span></div>
+        <aside className="farm-tap-card">
+          <p className="eyebrow">ПАСТУШКА ЯИЦ</p><b>Натапай яйцо</b>
+          <button className="farm-tap-pig" onClick={tap} aria-label="Пасти свинку">
+            <img src={farmTapPigImage} alt="Свинка для тапов" />
+            <span>Тап!</span>
+          </button>
+          <div className="farm-progress"><i style={{ width: `${Math.min(100, ((farm?.tapCount || 0) / (farm?.tapTarget || 1000)) * 100)}%` }} /><b>{(farm?.tapCount || 0).toLocaleString("ru-RU")} / {farm?.tapTarget || 1000}</b></div>
+          <small>1 000 касаний = 1 яйцо</small>
+        </aside>
+        <main className="farm-main-scene">
+          {hatched ? (
+            <div className="farm-hatched"><img src={farmHatchedImage} alt="Свинка вылупилась" /><b>ДОБРО ПОЖАЛОВАТЬ, {activePig?.name || "СВИНКА"}!</b></div>
+          ) : farm?.hatchingStage ? (
+            <button className="farm-egg-breaker" disabled={busy} onClick={crack}>
+              <p className="eyebrow">УДАР {farm.hatchingStage}/3</p><b>БЕЙ ПО ЯЙЦУ!</b>
+              <img src={farmCrackImages[farm.hatchingStage - 1]} alt="Фермерское яйцо" />
+              <small>{farm.hatchingStage === 1 ? "Первый удар расколет скорлупу" : farm.hatchingStage === 2 ? "Ещё один удар — оно почти готово" : "Последний удар — и свинка вылупится"}</small>
+            </button>
+          ) : activePig ? (
+            <div className="farm-pig-home">
+              <button className="farm-grown-pig" disabled={busy} onClick={() => void care("PET")} title="Погладить свинку">
+                <img src={stageImage} alt={activePig.name} />
+                <span>Нажми, чтобы погладить</span>
+              </button>
+              <div className="farm-pig-caption"><p className="eyebrow">УРОВЕНЬ РОСТА {activePig.growthStage + 1}/5</p><h2>{activePig.name}</h2><p>{activePig.ageDays >= 85 ? "Почти легенда фермы!" : activePig.ageDays >= 60 ? "Опытная взрослая свинка" : activePig.ageDays >= 30 ? "Свинка заметно подросла" : activePig.ageDays >= 15 ? "Свинка крепнет с каждым днём" : "Новенькая малышка на ферме"}</p></div>
+            </div>
+          ) : (
+            <div className="farm-incubator">
+              <img src={farmEggImage} alt="Фермерское яйцо" />
+              <p className="eyebrow">ИНКУБАТОР</p><h2>{farm?.eggs ? "Дай имя будущей свинке" : "Яйца пока нет"}</h2>
+              {farm?.eggs ? <><input value={pigName} maxLength={24} onChange={(event) => setPigName(event.target.value)} placeholder="Имя свинки" /><button className="pig-button" disabled={busy || (farm?.farmCoins || 0) < (farm?.hatchCost || 100000)} onClick={startHatch}>ВЫЛУПИТЬ ЗА {(farm?.hatchCost || 100000).toLocaleString("ru-RU")} 🌿</button></> : <p>Пасти свинку слева до 1 000 тапов или выбей редкое яйцо из фермерского кейса.</p>}
+              {farm?.eggs ? <small>На счету {farm.eggs} яйц{farm.eggs === 1 ? "о" : "а"} · нужно {farm?.hatchCost.toLocaleString("ru-RU")} ферма-коинов.</small> : null}
+            </div>
+          )}
+        </main>
+        {activePig && <aside className="farm-care-card">
+          <p className="eyebrow">УХОД ЗА {activePig.name.toUpperCase()}</p>
+          <div className="farm-care-status"><b>{activePig.ageDays < 3 ? "Первые 3 дня под защитой" : `До безопасности: ${careNeeded} из 2 дел`}</b><small>Каждые 3 дня нужно минимум 2 процедуры.</small></div>
+          <button className="farm-care pet" disabled={busy} onClick={() => void care("PET")}><span>🤲</span><b>Погладить</b><small>бесплатно</small></button>
+          <button className="farm-care feed" disabled={busy} onClick={() => void care("FEED")}><span>🥕</span><b>Покормить</b><small>{coins(farm.feedCost)} SC</small></button>
+          <button className={`farm-care wash ${washActive ? "washing" : ""}`} disabled={busy && !washActive} onPointerDown={() => !busy && setWashActive(true)} onPointerUp={stopWash} onPointerLeave={stopWash} onPointerCancel={stopWash}>
+            <img src={farmSpongeImage} alt="Губка" /><b>{washActive ? `Моем… ${washProgress}%` : "Тереть губкой"}</b><small>удерживай 30 сек.</small><i style={{ width: `${washProgress}%` }} />
+          </button>
+        </aside>}
+      </section>
+      <section className="farm-cases-section">
+        <div className="farm-section-head"><div><p className="eyebrow">СВИНОФЕРМЕРЫ</p><h2>Фермерские кейсы</h2><p>В каждом спрятано обычное снаряжение и крошечный шанс на фермерское яйцо.</p></div><span>🥚 ШАНС РЕДКИЙ</span></div>
+        <div className="farm-case-grid">{cases.map((item) => <button className="farm-case" key={item.id} onClick={() => onOpenCase(item)}><img src={item.image} alt={item.name} /><span><small>{farmEggChances[item.slug] || "малый шанс"} яйцо</small><b>{item.name}</b><em>{coins(item.price)} SC</em></span><i>Открыть →</i></button>)}</div>
+      </section>
+      {(farm?.cemetery.length || farm?.graduates.length) ? <section className="farm-history"><div><p className="eyebrow">ИСТОРИЯ ФЕРМЫ</p><h2>Кладбище и долгожители</h2></div><div>{farm.cemetery.map((pig) => <article className="farm-grave" key={pig.id}><span>🪦</span><b>{pig.name}</b><small>ушла на {pig.ageDays}-й день</small></article>)}{farm.graduates.map((pig) => <article className="farm-grave graduate" key={pig.id}><span>🏅</span><b>{pig.name}</b><small>выросла до 90 дней</small></article>)}</div></section> : null}
+    </section>
+  );
+}
+
 function GamesHub({
   onOpen,
   dailyWinners,
@@ -4375,14 +4648,14 @@ function GamesHub({
 }: {
   onOpen: (
     game:
-      | "upgrade" | "battles" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss",
+      | "upgrade" | "battles" | "mines" | "pigsty" | "road" | "contract" | "crash" | "farm" | "boss",
   ) => void;
   dailyWinners: DailyWinner[];
   onOpenProfile: (id: string) => void;
 }) {
   const games: Array<{
     id:
-      | "upgrade" | "battles" | "mines" | "pigsty" | "road" | "contract" | "crash" | "boss";
+      | "upgrade" | "battles" | "mines" | "pigsty" | "road" | "contract" | "crash" | "farm" | "boss";
     icon: string;
     eyebrow: string;
     title: string;
@@ -4430,6 +4703,14 @@ function GamesHub({
       action: "К дороге",
     },
     {
+      id: "farm",
+      icon: "🥚",
+      eyebrow: "PIGGY FARM",
+      title: "СвиноФерма",
+      text: "Тапай, собирай яйца и вырасти свою свинку до 90-го дня.",
+      action: "На ферму",
+    },
+    {
       id: "contract",
       icon: "📜",
       eyebrow: "PIGGY CONTRACT",
@@ -4454,7 +4735,7 @@ function GamesHub({
           Выбери свою <strong>игру</strong>
         </h1>
         <p>
-          Семь режимов, один свинобаланс и настоящая конкуренция с игроками.
+          Восемь режимов, один свинобаланс и настоящая конкуренция с игроками.
         </p>
       </div>
       <section className="daily-winners-strip">
@@ -6412,6 +6693,7 @@ function CaseModal({
   setCount,
   opening,
   balanceReward,
+  farmReward,
   phase,
   mode,
   setMode,
@@ -6428,6 +6710,7 @@ function CaseModal({
   setCount: (n: number) => void;
   opening: Drop[] | null;
   balanceReward: number;
+  farmReward: { coins: number; eggs: number };
   phase: "idle" | "spinning" | "result";
   mode: SpinMode;
   setMode: (mode: SpinMode) => void;
@@ -6615,6 +6898,12 @@ function CaseModal({
                   ))}
                 </div>
               ) : <><b>{opening.map((drop) => drop.item.name).join(" · ")}</b><em>{caseDropsSold ? "Окно кейса остаётся открытым — можешь сразу открыть ещё." : "Оставь в инвентаре или продай сразу за полную цену."}</em></>}
+              {(farmReward.coins > 0 || farmReward.eggs > 0) && (
+                <div className="case-farm-reward">
+                  <span>🌿 +{farmReward.coins.toLocaleString("ru-RU")} ферма-коинов</span>
+                  {farmReward.eggs > 0 && <b>🥚 ЯЙЦО НАЙДЕНО!</b>}
+                </div>
+              )}
             </div>
             <div className="case-result-actions">
               <button className="login" onClick={onClose}>
@@ -6925,6 +7214,7 @@ function AdminPanelV2({
     mines: "Мины",
     pigsty: "Свинарник",
     road: "Свиная дорога",
+    farm: "СвиноФерма",
     contract: "Контракт",
     crash: "Свинокраш",
     boss: "Босс Фалыч",

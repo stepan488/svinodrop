@@ -66,6 +66,12 @@ export const CASES = [
   { name: 'Серебряная Свинка', slug: 'silver-pig', price: 549900, image: 'https://i.ibb.co/3bxYFqN/259db9b0-1b65-4a3c-a0db-4cd6e850ed68.png', collection: 'От рубля до ножа', itemIds: ['4','5','6','7','8','9','10','11','12','13'], weights: {} },
   { name: 'Золотая Свинка', slug: 'gold-pig', price: 1129900, image: 'https://i.ibb.co/HLzj34nn/c11187df-fda2-4f20-b861-256468e28b05.png', collection: 'От рубля до ножа', itemIds: ['8','9','10','11','12','13','14','15','16','17'], weights: {} },
   { name: 'Алмазная Свинка', slug: 'diamond-pig', price: 2879900, image: 'https://i.ibb.co/4gTFcZgG/5b38f5b8-f09e-4d63-a269-7736a8e372f5.png', collection: 'От рубля до ножа', itemIds: ['15','16','17','18','19','20','21','22','23','24'], weights: {} },
+  // Farm cases live only in the Pig Farm screen. A tiny independent egg chance
+  // is applied by the API on opening; their normal skin pools stay visible.
+  { name: 'Маленькая Свинка', slug: 'farm-little-pig', price: 66700, image: 'https://i.ibb.co/VYV2yNwn/image.png', collection: 'СвиноФермеры', itemIds: ['1','2','3','4'], weights: {} },
+  { name: 'Старшая Свинка', slug: 'farm-senior-pig', price: 167600, image: 'https://i.ibb.co/0yg4CV3R/c110c0d5-7619-4857-baf0-269c5c82c77c.png', collection: 'СвиноФермеры', itemIds: ['2','3','4','5','6'], weights: {} },
+  { name: 'Старенькая Свинка', slug: 'farm-elder-pig', price: 416700, image: 'https://i.ibb.co/5X2GwPxt/b8c9a755-1e50-4546-9253-b07eed9abea1.png', collection: 'СвиноФермеры', itemIds: ['4','5','6','7','8','9'], weights: {} },
+  { name: 'Пророк Свинка', slug: 'farm-prophet-pig', price: 866700, image: 'https://i.ibb.co/v4yrPwJ1/image.png', collection: 'СвиноФермеры', itemIds: ['6','7','8','9','10','11'], weights: {} },
   // Magic cases hide their contents and never use the standard roulette.
   // The short lists and low-biased weights keep multi-drops exciting without
   // making the collection a guaranteed profit machine.

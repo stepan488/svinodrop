@@ -37,6 +37,7 @@ model User {
   navalGamesCreated NavalGame[] @relation("NavalCreator")
   navalPlayers NavalPlayer[]
   bossAttacks BossAttack[]
+  farmProfile FarmProfile?
 }
 
 model Item {
@@ -292,4 +293,41 @@ model BossAttack {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@index([eventKey, userId])
   @@index([eventKey, createdAt])
+}
+
+model FarmProfile {
+  id String @id @default(uuid())
+  userId String @unique
+  tapCount Int @default(0)
+  eggs Int @default(0)
+  farmCoins Int @default(0)
+  hatchingStage Int @default(0)
+  hatchingName String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pigs FarmPig[]
+}
+
+model FarmPig {
+  id String @id @default(uuid())
+  profileId String
+  name String
+  status String @default("ALIVE")
+  hatchedAt DateTime @default(now())
+  diedAt DateTime?
+  graduatedAt DateTime?
+  createdAt DateTime @default(now())
+  profile FarmProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  care FarmCare[]
+  @@index([profileId, status, hatchedAt])
+}
+
+model FarmCare {
+  id String @id @default(uuid())
+  pigId String
+  type String
+  createdAt DateTime @default(now())
+  pig FarmPig @relation(fields: [pigId], references: [id], onDelete: Cascade)
+  @@index([pigId, createdAt])
 }
