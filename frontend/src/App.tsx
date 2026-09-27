@@ -471,10 +471,40 @@ const guestSkins: Skin[] = [
   ["guest-6", "AK-47 | Inheritance", "BS", 27232000, "COVERT", "https://cdn2.csgo.com/item/image/width=916/AK-47%20%7C%20Inheritance%20(Battle-Scarred).webp"],
 ].map(([id, name, wear, price, rarity, image]) => ({ id: String(id), name: String(name), wear: String(wear), price: Number(price), rarity: String(rarity), image: String(image), upgradeEligible: true }));
 
-const guestCases = fallbackCases.map((item, index) => ({
-  ...item,
+const guestCaseCatalog = [
+  ["Генста Свин!", "gensta-svin", 49900, "https://i.ibb.co/tPW2Xyys/b4f6cb58-752e-44ae-885c-bbbe73098ba9-removebg-preview.png", "Свиноохотники"],
+  ["Хакер Свин!", "hacker-svin", 99900, "https://i.ibb.co/tpP5yjCF/48eb32a1-02f8-438f-b615-996134c84736-removebg-preview.png", "Свиноохотники"],
+  ["Мапер Свин!", "mapper-svin", 199900, "https://i.ibb.co/8qK632y/9129ec80-5503-466d-ad65-5a61220e8d5c-removebg-preview.png", "Свиноохотники"],
+  ["Пиратский Свин!", "pirate-svin", 349900, "https://i.ibb.co/tpc6jfbr/9ff2456a-8ed4-43f4-883d-0d98633f1de0.png", "Свиноохотники"],
+  ["Богатый Свин", "rich-pig", 499900, "https://i.ibb.co/nsxsNwr7/fc659d53-b9c9-4f72-8e58-e65a50cc7d80.png", "Свинячий Окуп"],
+  ["Мажор Свин", "major-pig", 799900, "https://i.ibb.co/zHtrBHbp/4949a980-100f-4a60-ba88-7617985c3a74.png", "Свинячий Окуп"],
+  ["Миллионер Свин", "millionaire-pig", 1499900, "https://i.ibb.co/QFjc9f5x/7873dd36-8b67-44ac-9219-a7daf275efb3.png", "Свинячий Окуп"],
+  ["Миллиардер Свин", "billionaire-pig", 3499900, "https://i.ibb.co/SXLJzPXt/c7760d81-66b9-4dfd-a8ab-a21f573f6474.png", "Свинячий Окуп"],
+  ["Джордж", "george-pig", 2499900, "https://i.ibb.co/4ZQs3hpH/fef3e74c-e72d-46a6-a2ea-543d16e2cd07.png", "Свинки Пепы"],
+  ["Пеппа", "peppa-pig", 5499900, "https://i.ibb.co/gLQQqmM4/68d4958f-3fc1-492a-9308-ed4a335cdc48.png", "Свинки Пепы"],
+  ["Мама Свин", "mama-pig", 9999900, "https://i.ibb.co/LhtQ2kgL/26c90aa5-bb72-42c8-bdde-7b44562f30b3-removebg-preview.png", "Свинки Пепы"],
+  ["Папа Свин", "papa-pig", 14999900, "https://i.ibb.co/20D5wWcg/2299f886-d122-404b-9d5b-5ab19efc3677.png", "Свинки Пепы"],
+  ["Триллионер Свин", "trillionaire-pig", 21999900, "https://i.ibb.co/d048cfY0/28672eb8-a65b-450f-b172-e78fe5ce5411.png", "Свинячий Окуп"],
+  ["Квадриллионер Свин", "quadrillionaire-pig", 37999900, "https://i.ibb.co/7JQwTpVd/c6fa35c6-5211-4a74-b35a-93fb11cfe143.png", "Свинячий Окуп"],
+  ["Квинтиллионер Свин", "quintillionaire-pig", 62999900, "https://i.ibb.co/gMPv0p84/53826e57-4bb4-48ae-8ab8-52ffc2b29e43.png", "Свинячий Окуп"],
+  ["Секстиллионер Свин", "sextillionaire-pig", 99999900, "https://i.ibb.co/Y4DdTXWN/966b7b39-58f7-4293-af75-15d2fff56904.png", "Свинячий Окуп"],
+  ["Бронзовая Свинка", "bronze-pig", 299900, "https://i.ibb.co/yBhQB6HL/b9afd12f-6393-4daf-af18-f21d2ba1822e.png", "От рубля до ножа"],
+  ["Серебряная Свинка", "silver-pig", 549900, "https://i.ibb.co/3bxYFqN/259db9b0-1b65-4a3c-a0db-4cd6e850ed68.png", "От рубля до ножа"],
+  ["Золотая Свинка", "gold-pig", 1129900, "https://i.ibb.co/HLzj34nn/c11187df-fda2-4f20-b861-256468e28b05.png", "От рубля до ножа"],
+  ["Алмазная Свинка", "diamond-pig", 2879900, "https://i.ibb.co/4gTFcZgG/5b38f5b8-f09e-4d63-a269-7736a8e372f5.png", "От рубля до ножа"],
+  ["Маленькая Свинка", "farm-little-pig", 66700, "https://i.ibb.co/VYV2yNwn/image.png", "СвиноФермеры"],
+  ["Старшая Свинка", "farm-senior-pig", 167600, "https://i.ibb.co/0yg4CV3R/c110c0d5-7619-4857-baf0-269c5c82c77c.png", "СвиноФермеры"],
+  ["Старенькая Свинка", "farm-elder-pig", 416700, "https://i.ibb.co/5X2GwPxt/b8c9a755-1e50-4546-9253-b07eed9abea1.png", "СвиноФермеры"],
+  ["Пророк Свинка", "farm-prophet-pig", 866700, "https://i.ibb.co/v4yrPwJ1/image.png", "СвиноФермеры"],
+  ["Волшебник Свин", "wizard-pig", 199900, "https://i.ibb.co/RT84L404/746c0f7b-65de-46a0-a366-d924619e1aac.png", "Магические Свиньи"],
+  ["Ядовитый Волшебник Свин", "poison-wizard-pig", 399900, "https://i.ibb.co/Y445H4BK/0d5fe353-9512-488c-9f76-504db1cc3276.png", "Магические Свиньи"],
+  ["Демонический Волшебник Свин", "demon-wizard-pig", 899900, "https://i.ibb.co/1JfThvvc/ede1a3e2-ccde-4500-86bd-6a963cae8960.png", "Магические Свиньи"],
+  ["Главный Волшебник Свин", "arch-wizard-pig", 1799900, "https://i.ibb.co/Rph2Q919/0dade8c9-2b72-4a95-a2b3-2889c429bd26-removebg-preview.png", "Магические Свиньи"],
+] as const;
+const guestCases: Case[] = guestCaseCatalog.map(([name, slug, price, image, collection], index) => ({
+  id: `guest-${slug}`, name, slug, price, image, collection,
   maxOpen: 10,
-  items: guestSkins.slice(index, index + 4).map((skin, position) => ({ id: `${item.id}-${skin.id}`, weight: 4 - position, item: skin })),
+  items: guestSkins.slice(index % 3, (index % 3) + 4).map((skin, position) => ({ id: `${slug}-${skin.id}`, weight: 4 - position, item: skin })),
 }));
 const GUEST_TOKEN = "local-guest";
 
@@ -1019,7 +1049,7 @@ export default function App() {
       const nextInventory = [...inventory, ...drops.map((drop) => ({ id: drop.inventoryId!, item: drop.item, obtainedAt: new Date().toISOString(), obtainedFrom: selectedCase.name }))];
       const nextUser = { ...user, balance: user.balance - cost };
       setOpening(drops); setInventory(nextInventory); setUser(nextUser);
-      saveGuest(nextUser, nextInventory); setCasePhase("spinning"); playSiteSound("case");
+      saveGuest(nextUser, nextInventory); setCasePhase("spinning");
       return;
     }
     if (selectedCase.id.startsWith("offline"))
@@ -1059,7 +1089,7 @@ export default function App() {
       const nextUser = { ...user, balance: user.balance - upgradeBalance + compensation };
       setInventory(nextInventory); setUser(nextUser); saveGuest(nextUser, nextInventory);
       setUpgradeResult({ upgradeId: `guest-upgrade-${Date.now()}`, success, chance: upgradeChance, landingAngle: success ? 12 : 220, target, compensation });
-      playSiteSound("upgrade"); return;
+      return;
     }
     try {
       setUpgradePhase("spinning");
