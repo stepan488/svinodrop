@@ -4476,6 +4476,7 @@ function FarmPage({
   const [renameName, setRenameName] = useState("");
   const [petBurst, setPetBurst] = useState(0);
   const [feedBurst, setFeedBurst] = useState(0);
+  const [farmGuideOpen, setFarmGuideOpen] = useState(false);
   const tapQueue = useRef(0);
   const tapTimer = useRef<number | null>(null);
   const tapSending = useRef(false);
@@ -4490,6 +4491,11 @@ function FarmPage({
     }
   };
   useEffect(() => { void load(); }, [token]);
+  useEffect(() => {
+    if (!user) return;
+    const key = `svinodrop-farm-guide-seen:${user.id}`;
+    if (!localStorage.getItem(key)) { localStorage.setItem(key, "1"); setFarmGuideOpen(true); }
+  }, [user?.id]);
   const tapStorageKey = user ? `svinodrop-farm-pending-taps:${user.id}` : null;
   const saveQueuedTaps = () => {
     if (!tapStorageKey) return;
@@ -4625,7 +4631,7 @@ function FarmPage({
   return (
     <section className="page compact-page farm-page">
       <header className="farm-hero">
-        <div><p className="eyebrow">PIGGY FARM · 90 ДНЕЙ ЗАБОТЫ</p><h1>Свино<strong>Ферма</strong></h1><p>Тапай по пастушке, добывай яйца и вырасти свою свинку до почётных 90 дней.</p></div>
+        <div><p className="eyebrow">PIGGY FARM · 90 ДНЕЙ ЗАБОТЫ</p><h1>Свино<strong>Ферма</strong></h1><p>Тапай по пастушке, добывай яйца и вырасти свою свинку до почётных 90 дней.</p><div className="farm-hero-actions"><button className="farm-guide-button" onClick={() => setFarmGuideOpen(true)}>Как это работает? →</button><span>🏆 90 дней жизни = <b>100 ₽</b></span></div></div>
         <div className="farm-hero-tools"><button className={`farm-bonus-bag ${farm?.bonusBag ? "ready" : ""}`} onClick={claimFarmBonus} disabled={!farm?.bonusBag || busy} title="Награда за идеальный уход"><span>👜</span><b>{farm?.bonusBag ? `+${coins(farm.bonusBag)} SC` : "Мешочек"}</b><small>{farm?.bonusBag ? "Забрать" : "Идеальный день"}</small></button><div className="farm-wallet"><span>🌿</span><div><small>ФЕРМА-КОИНЫ</small><b>{(farm?.farmCoins || 0).toLocaleString("ru-RU")}</b></div><em>+1% цены каждого кейса</em></div></div>
       </header>
       <section className="farm-stage" style={{ backgroundImage: `linear-gradient(180deg,#12071834,#100611cc),url(${farmBackgroundImage})` }}>
@@ -4682,6 +4688,7 @@ function FarmPage({
         <div className="farm-case-grid">{cases.map((item) => <button className="farm-case" key={item.id} onClick={() => onOpenCase(item)}><img src={item.image} alt={item.name} /><span><small>{farmEggChances[item.slug] || "малый шанс"} яйцо</small><b>{item.name}</b><em>{coins(item.price)} SC</em></span><i>Открыть →</i></button>)}</div>
       </section>
       {(farm?.cemetery.length || farm?.graduates.length) ? <section className="farm-history"><div><p className="eyebrow">ИСТОРИЯ ФЕРМЫ</p><h2>Кладбище и долгожители</h2></div><div>{farm.cemetery.map((pig) => <article className="farm-grave" key={pig.id}><span>🪦</span><b>{pig.name}</b><small>ушла на {pig.ageDays}-й день</small></article>)}{farm.graduates.map((pig) => <article className="farm-grave graduate" key={pig.id}><span>🏅</span><b>{pig.name}</b><small>выросла до 90 дней</small></article>)}</div></section> : null}
+      {farmGuideOpen && <div className="farm-guide-backdrop" onClick={() => setFarmGuideOpen(false)}><section className="farm-guide" onClick={(event) => event.stopPropagation()}><button className="farm-guide-close" onClick={() => setFarmGuideOpen(false)}>×</button><p className="eyebrow">ДОБРО ПОЖАЛОВАТЬ НА СВИНОФЕРМУ</p><h2>Вырастить свинку — значит дойти до 90 дней</h2><div><article><span>1</span><b>Добывай яйца</b><p>Тапай по пастушке или выбивай редкое яйцо из фермерских кейсов.</p></article><article><span>2</span><b>Вылупляй свинок</b><p>Нужно яйцо и 100 000 ферма-коинов. Одновременно можно растить до трёх свинок.</p></article><article><span>3</span><b>Ухаживай каждый день</b><p>Корми свинку раз в 24 часа; максимум две порции в день. Гладь её, чтобы поднимать настроение.</p></article><article><span>4</span><b>Забирай награды</b><p>Поглаживание + две порции корма дают мешочек на 20–100k SC. Свинка, прожившая 90 дней, приносит 100 ₽.</p></article></div><button className="pig-button" onClick={() => setFarmGuideOpen(false)}>ПОНЯТНО, НАЧИНАЕМ 🐷</button></section></div>}
     </section>
   );
 }
