@@ -460,6 +460,24 @@ const fallbackCases: Case[] = [
   items: [],
 }));
 
+// Browser-only testing mode. It never creates an account or changes the live
+// economy, so it remains usable when the remote database is paused.
+const guestSkins: Skin[] = [
+  ["guest-1", "Desert Eagle | Mint Fan", "FT", 150300, "MILSPEC", "https://cdn2.csgo.com/item/image/width=916/Desert%20Eagle%20%7C%20Mint%20Fan%20(Field-Tested).webp"],
+  ["guest-2", "Glock-18 | Лунная ночь", "BS", 782000, "MILSPEC", "https://cdn2.csgo.com/item/image/width=916/Glock-18%20%7C%20Moonrise%20(Battle-Scarred).webp"],
+  ["guest-3", "AK-47 | Breakthrough", "WW", 2335000, "RESTRICTED", "https://cdn2.csgo.com/item/image/width=916/AK-47%20%7C%20Breakthrough%20(Well-Worn).webp"],
+  ["guest-4", "M4A4 | Смерч", "FT", 6403000, "CLASSIFIED", "https://cdn2.csgo.com/item/image/width=916/M4A4%20%7C%20Tornado%20(Field-Tested).webp"],
+  ["guest-5", "M4A1-S | Party Animal", "MW", 14765000, "CLASSIFIED", "https://cdn2.csgo.com/item/image/width=916/M4A1-S%20%7C%20Party%20Animal%20(Minimal%20Wear).webp"],
+  ["guest-6", "AK-47 | Inheritance", "BS", 27232000, "COVERT", "https://cdn2.csgo.com/item/image/width=916/AK-47%20%7C%20Inheritance%20(Battle-Scarred).webp"],
+].map(([id, name, wear, price, rarity, image]) => ({ id: String(id), name: String(name), wear: String(wear), price: Number(price), rarity: String(rarity), image: String(image), upgradeEligible: true }));
+
+const guestCases = fallbackCases.map((item, index) => ({
+  ...item,
+  maxOpen: 10,
+  items: guestSkins.slice(index, index + 4).map((skin, position) => ({ id: `${item.id}-${skin.id}`, weight: 4 - position, item: skin })),
+}));
+const GUEST_TOKEN = "local-guest";
+
 class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -681,7 +699,7 @@ export default function App() {
   const [skins, setSkins] = useState<Skin[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState(
-    () => localStorage.getItem("svino-token") || "",
+    () => localStorage.getItem("svino-token") || (localStorage.getItem("svino-guest-mode") === "on" ? GUEST_TOKEN : ""),
   );
   const [inventory, setInventory] = useState<Inventory[]>([]);
   const [skinSort, setSkinSort] = useState<SkinSort>(
@@ -784,7 +802,26 @@ export default function App() {
     setNotice(text);
     window.setTimeout(() => setNotice(""), 3600);
   };
+  const isGuest = token === GUEST_TOKEN;
+  const saveGuest = (nextUser: User | null, nextInventory: Inventory[]) => {
+    if (!nextUser) return;
+    localStorage.setItem("svino-guest-user", JSON.stringify(nextUser));
+    localStorage.setItem("svino-guest-inventory", JSON.stringify(nextInventory));
+  };
+  const startGuest = () => {
+    const savedUser = localStorage.getItem("svino-guest-user");
+    const savedInventory = localStorage.getItem("svino-guest-inventory");
+    const guest: User = savedUser ? JSON.parse(savedUser) : {
+      id: "local-guest", username: "Гость-свин", email: "guest@local", avatar: "🐷", nickColor: "#ff65ae", balance: 1_000_000_00, role: "GUEST", createdAt: new Date().toISOString(),
+    };
+    const savedItems: Inventory[] = savedInventory ? JSON.parse(savedInventory) : [];
+    localStorage.setItem("svino-guest-mode", "on");
+    setToken(GUEST_TOKEN); setUser(guest); setInventory(savedItems); setSkins(guestSkins);
+    setCases(guestCases); setCasesReady(true); setAuthOpen(false);
+    toast("Режим гостя включён: это фантики, ничего не попадёт на реальный аккаунт.");
+  };
   const refreshPrivate = async () => {
+    if (token === GUEST_TOKEN) return;
     if (!token) return;
     try {
       // Only the dedicated session check may log a player out. A temporary
@@ -813,6 +850,7 @@ export default function App() {
     }
   };
   useEffect(() => {
+    if (token === GUEST_TOKEN) { startGuest(); return; }
     requestWithRetry("/api/cases")
       .then((data) => {
         setCases(data);
@@ -891,6 +929,7 @@ export default function App() {
     return () => window.removeEventListener("svino-sound", handleSound);
   }, [soundEnabled]);
   useEffect(() => {
+    if (token === GUEST_TOKEN) return;
     const socket = io(API, { auth: { token } });
     socket.on("online:count", setOnline);
     socket.on("online:users", setOnlineUsers);
@@ -968,6 +1007,21 @@ export default function App() {
   const openCase = async () => {
     if (!selectedCase) return;
     if (!token) return setAuthOpen(true);
+    if (isGuest) {
+      const cost = selectedCase.price * count;
+      if (!user || user.balance < cost) return toast("Не хватает фантиков.");
+      const pool = selectedCase.items.map(({ item }) => item);
+      const drops = Array.from({ length: count }, (_, index) => {
+        const item = pool[Math.floor(Math.random() * pool.length)] || guestSkins[0];
+        const inventoryId = `guest-drop-${Date.now()}-${index}`;
+        return { dropId: inventoryId, inventoryId, item };
+      });
+      const nextInventory = [...inventory, ...drops.map((drop) => ({ id: drop.inventoryId!, item: drop.item, obtainedAt: new Date().toISOString(), obtainedFrom: selectedCase.name }))];
+      const nextUser = { ...user, balance: user.balance - cost };
+      setOpening(drops); setInventory(nextInventory); setUser(nextUser);
+      saveGuest(nextUser, nextInventory); setCasePhase("spinning"); playSiteSound("case");
+      return;
+    }
     if (selectedCase.id.startsWith("offline"))
       return toast("Запусти базу данных и сервер, чтобы открыть кейс.");
     try {
@@ -996,6 +1050,17 @@ export default function App() {
     if (!token) return setAuthOpen(true);
     if (!sources.length || !target)
       return toast("Сначала выбери предметы и цель.");
+    if (isGuest && user) {
+      setUpgradePhase("spinning");
+      const success = Math.random() * 100 < upgradeChance;
+      const compensation = success ? 0 : Math.floor(upgradeStake * 0.05);
+      const retained = inventory.filter((entry) => !sources.some((source) => source.id === entry.id));
+      const nextInventory = success ? [...retained, { id: `guest-upgrade-${Date.now()}`, item: target, obtainedAt: new Date().toISOString(), obtainedFrom: "Гостевой апгрейд" }] : retained;
+      const nextUser = { ...user, balance: user.balance - upgradeBalance + compensation };
+      setInventory(nextInventory); setUser(nextUser); saveGuest(nextUser, nextInventory);
+      setUpgradeResult({ upgradeId: `guest-upgrade-${Date.now()}`, success, chance: upgradeChance, landingAngle: success ? 12 : 220, target, compensation });
+      playSiteSound("upgrade"); return;
+    }
     try {
       setUpgradePhase("spinning");
       const result = await request("/api/upgrades", token, {
@@ -1106,6 +1171,14 @@ export default function App() {
     if (sellingAll || sellingIds.has(inventoryId)) return;
     setSellingIds((current) => new Set(current).add(inventoryId));
     try {
+      if (isGuest && user) {
+        const item = inventory.find((entry) => entry.id === inventoryId);
+        if (!item) return;
+        const nextInventory = inventory.filter((entry) => entry.id !== inventoryId);
+        const nextUser = { ...user, balance: user.balance + item.item.price };
+        setInventory(nextInventory); setUser(nextUser); saveGuest(nextUser, nextInventory);
+        playSiteSound("sell"); toast(`Продано за ${coins(item.item.price)} фантиков`); return;
+      }
       const data = await request(`/api/inventory/${inventoryId}/sell`, token, {
         method: "POST",
       });
@@ -1141,6 +1214,12 @@ export default function App() {
       return;
     setSellingAll(true);
     try {
+      if (isGuest && user) {
+        const payout = inventory.reduce((total, item) => total + item.item.price, 0);
+        const nextUser = { ...user, balance: user.balance + payout };
+        setInventory([]); setUser(nextUser); saveGuest(nextUser, []);
+        playSiteSound("sell"); toast(`Продано предметов: ${inventory.length}. Получено ${coins(payout)} фантиков.`); return;
+      }
       const data = await request("/api/inventory/sell-all", token, {
         method: "POST",
       });
@@ -1165,6 +1244,14 @@ export default function App() {
     if (!opening?.length || sellingCaseDrops || caseDropsSold) return;
     setSellingCaseDrops(true);
     try {
+      if (isGuest && user) {
+        const ids = new Set(opening.filter((drop) => drop.inventoryId).map((drop) => drop.inventoryId));
+        const payout = opening.reduce((total, drop) => total + drop.item.price, 0);
+        const nextInventory = inventory.filter((item) => !ids.has(item.id));
+        const nextUser = { ...user, balance: user.balance + payout };
+        setInventory(nextInventory); setUser(nextUser); saveGuest(nextUser, nextInventory);
+        setCaseDropsSold(true); playSiteSound("sell"); toast(`Продано дропов: ${opening.length}. Получено ${coins(payout)} фантиков.`); return;
+      }
       let balance = user?.balance || 0;
       const sellableDrops = opening.filter((drop) => drop.inventoryId && !drop.farmEgg);
       for (const drop of sellableDrops) {
@@ -1938,6 +2025,7 @@ export default function App() {
               onClick={() =>
                 user
                   ? (localStorage.removeItem("svino-token"),
+                    localStorage.removeItem("svino-guest-mode"),
                     setToken(""),
                     setUser(null))
                   : setAuthOpen(true)
@@ -2247,7 +2335,7 @@ export default function App() {
         />
       )}
       {authOpen && (
-        <AuthModal onClose={() => setAuthOpen(false)} onSubmit={login} />
+        <AuthModal onClose={() => setAuthOpen(false)} onSubmit={login} onGuest={startGuest} />
       )}
       {onboardingOpen && user && (
         <OnboardingModal
@@ -6314,6 +6402,7 @@ function OnboardingModal({
 function AuthModal({
   onClose,
   onSubmit,
+  onGuest,
 }: {
   onClose: () => void;
   onSubmit: (
@@ -6321,6 +6410,7 @@ function AuthModal({
     password: string,
     username?: string,
   ) => Promise<void>;
+  onGuest: () => void;
 }) {
   const [register, setRegister] = useState(false);
   const [email, setEmail] = useState("");
@@ -6384,6 +6474,9 @@ function AuthModal({
           {register
             ? "Уже есть аккаунт? Войти"
             : "Нет аккаунта? Вступить в стаю"}
+        </button>
+        <button type="button" className="text-button" onClick={onGuest}>
+          🐷 Войти как гость — тест с фантиками
         </button>
       </form>
     </div>
